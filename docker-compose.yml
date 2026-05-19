@@ -1,0 +1,11 @@
+services:
+  frontend:
+    build: .
+    container_name: nodepulse-connect-dev
+    ports:
+      - "1420:1420"
+    volumes:
+      # Mount source for hot-reload; node_modules stays in container
+      - .:/app
+      - /app/node_modules
+    restart: unless-stopped

@@ -1,0 +1,227 @@
+name: Build & Publish NodePulse Connect
+
+on:
+  push:
+    tags:
+      - 'v*'      # e.g. v0.3.0
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version override (e.g. 0.3.0) — defaults to tag'
+        required: false
+
+jobs:
+  # ── Build per platform ─────────────────────────────────────────────────────────
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-latest
+            target:   windows-x86_64
+            bundle_dir: nsis
+            ext:      exe
+
+          - platform: macos-latest      # Apple Silicon (Intel Mac supported via Rosetta 2)
+            target:   darwin-aarch64
+            bundle_dir: dmg
+            ext:      dmg
+
+          - platform: ubuntu-22.04
+            target:   linux-x86_64
+            bundle_dir: appimage
+            ext:      AppImage
+
+    runs-on: ${{ matrix.platform }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: package-lock.json
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            src-tauri/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: Install Linux system dependencies
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Build Tauri app
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: npm run tauri build
+
+      # macOS: also create .app.tar.gz + sign it (Tauri v2 updater artifact for macOS)
+      - name: Create macOS updater artifact
+        if: matrix.platform == 'macos-latest'
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          APP_PATH=$(find src-tauri/target/release/bundle/macos -maxdepth 1 -name "*.app" | head -1)
+          APP_DIR=$(dirname "$APP_PATH")
+          APP_NAME=$(basename "$APP_PATH")
+          TARBALL="${APP_DIR}/${APP_NAME}.tar.gz"
+          tar -czf "$TARBALL" -C "$APP_DIR" "$APP_NAME"
+          npx @tauri-apps/cli signer sign \
+            --private-key "$TAURI_SIGNING_PRIVATE_KEY" \
+            --password "${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-}" \
+            "$TARBALL"
+
+      - name: Upload bundle artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bundle-${{ matrix.target }}
+          path: |
+            src-tauri/target/release/bundle/${{ matrix.bundle_dir }}/*.${{ matrix.ext }}
+            src-tauri/target/release/bundle/${{ matrix.bundle_dir }}/*.${{ matrix.ext }}.sig
+            src-tauri/target/release/bundle/macos/*.app.tar.gz
+            src-tauri/target/release/bundle/macos/*.app.tar.gz.sig
+          if-no-files-found: warn
+
+  # ── Publish: assemble latest.json + create GitHub Release ──────────────────────
+  publish:
+    needs: build
+    if: always() && !cancelled()
+    runs-on: ubuntu-22.04
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract version
+        id: ver
+        run: |
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            VERSION="${{ github.event.inputs.version }}"
+          else
+            VERSION="${GITHUB_REF#refs/tags/v}"
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Publishing version: $VERSION"
+
+      - name: Download all bundles
+        uses: actions/download-artifact@v4
+        with:
+          path: bundles
+          pattern: bundle-*
+          merge-multiple: false
+
+      - name: List downloaded artifacts
+        run: find bundles -type f | sort
+
+      - name: Assemble latest.json
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+          BASE_URL: https://github.com/aurigalugina/nodepulse-connect-releases/releases/download/v${{ steps.ver.outputs.version }}
+        run: |
+          read_sig() { cat "$1" 2>/dev/null || echo ""; }
+
+          WIN_EXE=$(find bundles/bundle-windows-x86_64 -name "*.exe"        | head -1)
+          MAC_TAR=$(find bundles/bundle-darwin-aarch64 -name "*.app.tar.gz" | head -1)
+          MAC_DMG=$(find bundles/bundle-darwin-aarch64 -name "*.dmg"        | head -1)
+          LNX_IMG=$(find bundles/bundle-linux-x86_64  -name "*.AppImage"    | head -1)
+
+          WIN_SIG=$(read_sig "${WIN_EXE}.sig")
+          MAC_SIG=$(read_sig "${MAC_TAR}.sig")
+          LNX_SIG=$(read_sig "${LNX_IMG}.sig")
+
+          PUB_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+          python3 - <<PYEOF
+          import json, os
+
+          base    = os.environ['BASE_URL']
+          version = os.environ['VERSION']
+
+          def url(fname):
+            # GitHub Releases normalizes spaces to dots in asset download URLs
+            return f"{base}/{os.path.basename(fname).replace(' ', '.')}" if fname else ""
+
+          manifest = {
+            "version":  version,
+            "notes":    f"NodePulse Connect v{version}",
+            "pub_date": "${PUB_DATE}",
+            "platforms": {},
+            "downloads": {}
+          }
+
+          updater_entries = [
+            ("windows-x86_64", "${WIN_EXE}", "${WIN_SIG}"),
+            ("darwin-aarch64", "${MAC_TAR}", "${MAC_SIG}"),
+            ("linux-x86_64",   "${LNX_IMG}", "${LNX_SIG}"),
+          ]
+          for target, fpath, sig in updater_entries:
+            if fpath and sig:
+              manifest["platforms"][target] = {
+                "url":       url(fpath),
+                "signature": sig.strip()
+              }
+
+          download_entries = [
+            ("windows-x86_64", "${WIN_EXE}"),
+            ("darwin-aarch64", "${MAC_DMG}"),
+            ("linux-x86_64",   "${LNX_IMG}"),
+          ]
+          for target, fpath in download_entries:
+            if fpath:
+              manifest["downloads"][target] = url(fpath)
+
+          with open("latest.json", "w") as f:
+            json.dump(manifest, f, indent=2)
+
+          print(json.dumps(manifest, indent=2))
+          PYEOF
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          ASSETS=()
+          while IFS= read -r f; do
+            ASSETS+=("$f")
+          done < <(find bundles -type f \( \
+            -name "*.exe"         -o -name "*.exe.sig"         \
+            -o -name "*.dmg"      \
+            -o -name "*.tar.gz"   -o -name "*.tar.gz.sig"      \
+            -o -name "*.AppImage" -o -name "*.AppImage.sig"     \
+          \))
+
+          gh release create "v${VERSION}" \
+            --title "NodePulse Connect v${VERSION}" \
+            --notes "NodePulse Connect v${VERSION}" \
+            "${ASSETS[@]}" latest.json
+
+      - name: Summary
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          echo "## NodePulse Connect v${VERSION} Published" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Release:** https://github.com/aurigalugina/nodepulse-connect-releases/releases/tag/v${VERSION}" >> $GITHUB_STEP_SUMMARY
+          echo "**Update manifest:** https://github.com/aurigalugina/nodepulse-connect-releases/releases/latest/download/latest.json" >> $GITHUB_STEP_SUMMARY

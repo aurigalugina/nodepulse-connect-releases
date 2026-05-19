@@ -1,0 +1,14 @@
+/home/node-pulse/nodepulse-connect/src-tauri/target/release/deps/serde-2b744a8a4164a033.d: /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/lib.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/integer128.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/mod.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/de.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/ser.rs /home/node-pulse/nodepulse-connect/src-tauri/target/release/build/serde-9a4671533e2ff8f9/out/private.rs
+
+/home/node-pulse/nodepulse-connect/src-tauri/target/release/deps/libserde-2b744a8a4164a033.rlib: /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/lib.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/integer128.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/mod.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/de.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/ser.rs /home/node-pulse/nodepulse-connect/src-tauri/target/release/build/serde-9a4671533e2ff8f9/out/private.rs
+
+/home/node-pulse/nodepulse-connect/src-tauri/target/release/deps/libserde-2b744a8a4164a033.rmeta: /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/lib.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/integer128.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/mod.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/de.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/ser.rs /home/node-pulse/nodepulse-connect/src-tauri/target/release/build/serde-9a4671533e2ff8f9/out/private.rs
+
+/root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/lib.rs:
+/root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/integer128.rs:
+/root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/mod.rs:
+/root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/de.rs:
+/root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/ser.rs:
+/home/node-pulse/nodepulse-connect/src-tauri/target/release/build/serde-9a4671533e2ff8f9/out/private.rs:
+
+# env-dep:OUT_DIR=/home/node-pulse/nodepulse-connect/src-tauri/target/release/build/serde-9a4671533e2ff8f9/out

@@ -1,0 +1,106 @@
+@import 'tailwindcss';
+
+@theme {
+  --color-np-bg:          #0b0b18;
+  --color-np-surface:     #12121f;
+  --color-np-elevated:    #1a1a2d;
+  --color-np-border:      #24243c;
+  --color-np-border-dim:  #1c1c30;
+
+  --color-np-indigo:       #6366f1;
+  --color-np-indigo-light: #818cf8;
+  --color-np-indigo-dim:   #6366f11a;
+  --color-np-indigo-ring:  #6366f133;
+
+  --color-np-green:     #34d399;
+  --color-np-green-dim: #34d39916;
+
+  --color-np-red:     #f87171;
+  --color-np-red-dim: #f8717116;
+
+  --color-np-amber:     #fbbf24;
+  --color-np-amber-dim: #fbbf2414;
+
+  --color-np-text:    #eef0f6;
+  --color-np-muted:   #7c859e;
+  --color-np-subtle:  #363850;
+}
+
+html, body, #app {
+  height: 100%;
+  overflow: hidden;
+  background: #0b0b18;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Inter', system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  user-select: none;
+}
+
+/* Thin scrollbar */
+::-webkit-scrollbar { width: 3px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--color-np-border); border-radius: 2px; }
+
+/* Global input style */
+.np-input {
+  width: 100%;
+  background: var(--color-np-elevated);
+  border: 1px solid var(--color-np-border);
+  border-radius: 8px;
+  color: var(--color-np-text);
+  padding: 8px 12px;
+  font-size: 13px;
+  outline: none;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.np-input:focus {
+  border-color: var(--color-np-indigo);
+  box-shadow: 0 0 0 3px var(--color-np-indigo-ring);
+}
+
+.np-input::placeholder { color: var(--color-np-subtle); }
+.np-input:disabled { opacity: 0.45; cursor: not-allowed; }
+
+/* Button variants */
+.np-btn-primary {
+  width: 100%;
+  background: var(--color-np-indigo);
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  padding: 9px 16px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s, opacity 0.15s;
+}
+.np-btn-primary:hover:not(:disabled) { background: #5254e8; }
+.np-btn-primary:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.np-btn-ghost {
+  background: transparent;
+  border: 1px solid var(--color-np-border);
+  color: var(--color-np-muted);
+  border-radius: 8px;
+  padding: 7px 14px;
+  font-size: 13px;
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s;
+}
+.np-btn-ghost:hover { border-color: var(--color-np-border); color: var(--color-np-text); }
+
+.np-btn-danger {
+  background: var(--color-np-red-dim);
+  border: 1px solid color-mix(in srgb, var(--color-np-red) 25%, transparent);
+  color: var(--color-np-red);
+  border-radius: 8px;
+  padding: 7px 14px;
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.np-btn-danger:hover { background: color-mix(in srgb, var(--color-np-red) 18%, transparent); }

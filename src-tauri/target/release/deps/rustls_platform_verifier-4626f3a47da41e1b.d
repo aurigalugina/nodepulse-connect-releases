@@ -1,0 +1,10 @@
+/home/node-pulse/nodepulse-connect/src-tauri/target/release/deps/rustls_platform_verifier-4626f3a47da41e1b.d: /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rustls-platform-verifier-0.7.0/src/lib.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rustls-platform-verifier-0.7.0/src/verification/mod.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rustls-platform-verifier-0.7.0/src/verification/others.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rustls-platform-verifier-0.7.0/src/../README.md
+
+/home/node-pulse/nodepulse-connect/src-tauri/target/release/deps/librustls_platform_verifier-4626f3a47da41e1b.rlib: /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rustls-platform-verifier-0.7.0/src/lib.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rustls-platform-verifier-0.7.0/src/verification/mod.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rustls-platform-verifier-0.7.0/src/verification/others.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rustls-platform-verifier-0.7.0/src/../README.md
+
+/home/node-pulse/nodepulse-connect/src-tauri/target/release/deps/librustls_platform_verifier-4626f3a47da41e1b.rmeta: /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rustls-platform-verifier-0.7.0/src/lib.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rustls-platform-verifier-0.7.0/src/verification/mod.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rustls-platform-verifier-0.7.0/src/verification/others.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rustls-platform-verifier-0.7.0/src/../README.md
+
+/root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rustls-platform-verifier-0.7.0/src/lib.rs:
+/root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rustls-platform-verifier-0.7.0/src/verification/mod.rs:
+/root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rustls-platform-verifier-0.7.0/src/verification/others.rs:
+/root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rustls-platform-verifier-0.7.0/src/../README.md:

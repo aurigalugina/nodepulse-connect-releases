@@ -67,33 +67,6 @@ jobs:
             librsvg2-dev \
             patchelf
 
-      - name: Download Tailscale binaries (Windows sidecar)
-        if: matrix.platform == 'windows-latest'
-        shell: pwsh
-        run: |
-          # pkgs.tailscale.com redirects -latest to current stable version
-          $url = "https://pkgs.tailscale.com/stable/tailscale-setup-latest.exe"
-          Write-Host "Downloading Tailscale installer from $url"
-          Invoke-WebRequest -Uri $url -OutFile ts-setup.exe -UseBasicParsing
-          # Silent install — GitHub Actions runners have admin rights
-          Start-Process -FilePath "$PWD\ts-setup.exe" -ArgumentList "/quiet", "/install", "/norestart" -Wait -NoNewWindow
-          # Wait until tailscale.exe appears (up to 90s)
-          $tsExe = $null
-          for ($i = 0; $i -lt 18; $i++) {
-            $tsExe = Get-ChildItem "C:\Program Files", "C:\Program Files (x86)" -Recurse -Filter "tailscale.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
-            if ($tsExe) { break }
-            Write-Host "Waiting for Tailscale install... ($($i*5)s)"
-            Start-Sleep -Seconds 5
-          }
-          if (-not $tsExe) { Write-Error "tailscale.exe not found after install"; exit 1 }
-          $tsDir = $tsExe.DirectoryName
-          Write-Host "Found Tailscale at: $tsDir"
-          New-Item -ItemType Directory -Force -Path src-tauri/binaries | Out-Null
-          Copy-Item "$tsDir\tailscale.exe"  "src-tauri/binaries/tailscale-x86_64-pc-windows-msvc.exe" -Force
-          Copy-Item "$tsDir\tailscaled.exe" "src-tauri/binaries/tailscaled-x86_64-pc-windows-msvc.exe" -Force
-          Stop-Service -Name "Tailscale" -Force -ErrorAction SilentlyContinue
-          Write-Host "Staged: tailscale.exe + tailscaled.exe from $tsDir"
-
       - name: Install npm dependencies
         run: npm ci
 

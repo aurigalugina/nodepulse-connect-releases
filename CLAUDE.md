@@ -8,8 +8,7 @@ Desktop app untuk personal devices (engineer Ussi / staff BPR) agar bisa join me
 - `@tauri-apps/api` v2, `@tauri-apps/plugin-fs`, `@tauri-apps/plugin-store`
 - `@tauri-apps/plugin-updater` v2 — auto-update via MinIO manifest
 - `@tauri-apps/plugin-process` v2 — `relaunch()` after update install
-- Tailscale (system-installed) — dipanggil via Tauri invoke commands
-- **TODO (future):** Bundle tailscale.exe + tailscaled.exe sebagai Tauri v2 sidecar agar user tidak perlu install Tailscale manual
+- Tailscale (system-installed, required) — dipanggil via Tauri invoke commands. User wajib install Tailscale terlebih dahulu di semua platform (Windows/macOS/Linux).
 
 ## Distribution & Auto-Update
 

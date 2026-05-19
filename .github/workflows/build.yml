@@ -72,17 +72,18 @@ jobs:
         shell: pwsh
         run: |
           $latest = Invoke-RestMethod "https://api.github.com/repos/tailscale/tailscale/releases/latest"
-          $ver = $latest.tag_name.TrimStart('v')
-          $asset = $latest.assets | Where-Object { $_.name -like "*windows*amd64*.zip" } | Select-Object -First 1
-          if (-not $asset) { Write-Error "No Windows amd64 zip found in release assets"; exit 1 }
+          $ver    = $latest.tag_name.TrimStart('v')
+          $asset  = $latest.assets | Where-Object { $_.name -like "tailscale-setup-*.exe" } | Select-Object -First 1
+          if (-not $asset) { Write-Error "tailscale-setup-*.exe not found in release"; exit 1 }
           Write-Host "Downloading $($asset.name) (v$ver)"
-          Invoke-WebRequest -Uri $asset.browser_download_url -OutFile ts.zip -UseBasicParsing
-          Expand-Archive ts.zip -DestinationPath ts_extracted -Force
+          Invoke-WebRequest -Uri $asset.browser_download_url -OutFile ts-setup.exe -UseBasicParsing
+          # Extract NSIS installer with 7-zip (available on GitHub Actions runners)
+          7z x ts-setup.exe -ots_extracted -y | Out-Null
           New-Item -ItemType Directory -Force -Path src-tauri/binaries | Out-Null
-          $tailscale  = Get-ChildItem ts_extracted -Recurse -Filter "tailscale.exe"  | Where-Object { $_.Name -eq "tailscale.exe"  } | Select-Object -First 1
-          $tailscaled = Get-ChildItem ts_extracted -Recurse -Filter "tailscaled.exe" | Where-Object { $_.Name -eq "tailscaled.exe" } | Select-Object -First 1
-          if (-not $tailscale)  { Write-Error "tailscale.exe not found in archive";  exit 1 }
-          if (-not $tailscaled) { Write-Error "tailscaled.exe not found in archive"; exit 1 }
+          $tailscale  = Get-ChildItem ts_extracted -Recurse | Where-Object { $_.Name -eq "tailscale.exe"  } | Select-Object -First 1
+          $tailscaled = Get-ChildItem ts_extracted -Recurse | Where-Object { $_.Name -eq "tailscaled.exe" } | Select-Object -First 1
+          if (-not $tailscale)  { Write-Error "tailscale.exe not found in installer";  exit 1 }
+          if (-not $tailscaled) { Write-Error "tailscaled.exe not found in installer"; exit 1 }
           Copy-Item $tailscale.FullName  "src-tauri/binaries/tailscale-x86_64-pc-windows-msvc.exe"
           Copy-Item $tailscaled.FullName "src-tauri/binaries/tailscaled-x86_64-pc-windows-msvc.exe"
           Write-Host "Tailscale binaries staged (v$ver)"

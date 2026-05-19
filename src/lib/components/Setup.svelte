@@ -51,6 +51,7 @@
   }
 
   const primaryPlatform = detectPrimaryPlatform();
+  const primaryDownloadLink = $derived(downloadLinks.find(l => l.label === primaryPlatform));
 
   async function checkTailscale() {
     checking = true;
@@ -239,14 +240,13 @@
         <p class="text-xs text-np-muted font-medium">Download Tailscale</p>
 
         <!-- Primary platform — prominent -->
-        {@const primary = downloadLinks.find(l => l.label === primaryPlatform)}
-        {#if primary}
+        {#if primaryDownloadLink}
           <button
-            onclick={() => open(primary.url)}
+            onclick={() => open(primaryDownloadLink.url)}
             class="np-btn-primary flex items-center justify-center gap-2"
           >
             <Download size={13} />
-            Download for {primary.label}
+            Download for {primaryDownloadLink.label}
           </button>
         {/if}
 

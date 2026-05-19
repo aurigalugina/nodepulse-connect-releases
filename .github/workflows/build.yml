@@ -75,16 +75,24 @@ jobs:
           $url = "https://pkgs.tailscale.com/stable/tailscale-setup-latest.exe"
           Write-Host "Downloading Tailscale installer from $url"
           Invoke-WebRequest -Uri $url -OutFile ts-setup.exe -UseBasicParsing
-          # Layer 1: extract Burn bootstrapper
-          7z x ts-setup.exe -ots_l1 -y | Out-Null
-          # Layer 2: extract each inner package (u0-u5 are MSI/CAB payloads)
-          Get-ChildItem ts_l1 | ForEach-Object {
-            Write-Host "=== Extracting $($_.Name) ==="
-            7z x $_.FullName -ots_l2 -y 2>&1 | Select-Object -Last 3
+          # Silent install — GitHub Actions runners have admin rights
+          Start-Process -FilePath "$PWD\ts-setup.exe" -ArgumentList "/quiet", "/install", "/norestart" -Wait -NoNewWindow
+          # Wait until tailscale.exe appears (up to 90s)
+          $tsExe = $null
+          for ($i = 0; $i -lt 18; $i++) {
+            $tsExe = Get-ChildItem "C:\Program Files", "C:\Program Files (x86)" -Recurse -Filter "tailscale.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($tsExe) { break }
+            Write-Host "Waiting for Tailscale install... ($($i*5)s)"
+            Start-Sleep -Seconds 5
           }
-          Write-Host "=== All extracted files ==="
-          Get-ChildItem ts_l2 -Recurse | Select-Object -ExpandProperty FullName
-          exit 0
+          if (-not $tsExe) { Write-Error "tailscale.exe not found after install"; exit 1 }
+          $tsDir = $tsExe.DirectoryName
+          Write-Host "Found Tailscale at: $tsDir"
+          New-Item -ItemType Directory -Force -Path src-tauri/binaries | Out-Null
+          Copy-Item "$tsDir\tailscale.exe"  "src-tauri/binaries/tailscale-x86_64-pc-windows-msvc.exe" -Force
+          Copy-Item "$tsDir\tailscaled.exe" "src-tauri/binaries/tailscaled-x86_64-pc-windows-msvc.exe" -Force
+          Stop-Service -Name "Tailscale" -Force -ErrorAction SilentlyContinue
+          Write-Host "Staged: tailscale.exe + tailscaled.exe from $tsDir"
 
       - name: Install npm dependencies
         run: npm ci

@@ -103,8 +103,8 @@ Dua jenis user (dari JWT `role` field):
 | `src/App.svelte` | Root — state machine routing + authStore.load on mount + UpdateNotice overlay |
 | `src/lib/stores/authStore.svelte.js` | Config persist (url, username, token, role, cluster_id, device_name) |
 | `src/lib/stores/connectionStore.svelte.js` | State machine, tailscale status polling, tray sync |
-| `src/lib/api/nodepulse.js` | NodePulse REST client: login (Bearer token), getClusters, getNetworkConfig, generateNetworkKey |
-| `src/lib/components/Setup.svelte` | Login form — detect tailscale, save role + cluster_id from login response |
+| `src/lib/api/nodepulse.js` | NodePulse REST client: login, getClusters, getNetworkConfig, generateNetworkKey, registerDevice, changePassword |
+| `src/lib/components/Setup.svelte` | Login form — detect tailscale, handle must_change_password (inline form), save role + cluster_id |
 | `src/lib/components/ClusterSelect.svelte` | Cluster picker for admin/operator; auto-join for client role |
 | `src/lib/components/Connecting.svelte` | Progress steps display (GENERATING_KEY + TAILSCALE_UP states) |
 | `src/lib/components/Connected.svelte` | Connected state — mesh IP, node list, disconnect button |
@@ -138,8 +138,10 @@ Utility classes: `.np-input`, `.np-btn-primary`, `.np-btn-ghost`, `.np-btn-dange
 
 ## Auth API
 - Login: `POST /api/v1/auth/login/token` — Bearer token (bukan cookie)
-- Response: `{ token, expires_at, role, cluster_id }`
+- Response: `{ token, expires_at, role, cluster_id, must_change_password }`
 - `cluster_id` non-empty hanya untuk role `client`
+- `must_change_password: true` → `Setup.svelte` tampilkan form ganti password sebelum lanjut ke CLUSTER_SELECT; JWT di-hold di `pendingToken` sampai berhasil
+- Change password: `POST /api/v1/auth/change-password` via `changePassword()` di `nodepulse.js`
 
 ## Tauri Commands Used
 - `read_config` / `write_config` / `clear_auth_token` — config persistence

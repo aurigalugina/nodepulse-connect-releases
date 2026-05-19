@@ -3,8 +3,8 @@
   import { open } from '@tauri-apps/plugin-shell';
   import { authStore } from '$lib/stores/authStore.svelte.js';
   import { connectionStore } from '$lib/stores/connectionStore.svelte.js';
-  import { login } from '$lib/api/nodepulse.js';
-  import { AlertTriangle, Download, RefreshCw } from 'lucide-svelte';
+  import { login, changePassword } from '$lib/api/nodepulse.js';
+  import { AlertTriangle, Download, RefreshCw, Lock } from 'lucide-svelte';
 
   let url = $state(authStore.config.nodepulse_url ?? '');
   let username = $state(authStore.config.username ?? '');
@@ -13,6 +13,29 @@
   let loading = $state(false);
   let tailscaleFound = $state(null);
   let checking = $state(true);
+
+  // Force password change state
+  let mustChangePassword = $state(false);
+  let pendingToken = $state('');   // JWT from login, used to call change-password
+  let pendingUrl = $state('');
+  let pendingLoginResult = $state(null);
+  let newPassword = $state('');
+  let confirmPassword = $state('');
+  let changeError = $state('');
+  let changeLoading = $state(false);
+
+  const pwChecks = $derived({
+    length:  newPassword.length >= 8,
+    upper:   /[A-Z]/.test(newPassword),
+    lower:   /[a-z]/.test(newPassword),
+    digit:   /[0-9]/.test(newPassword),
+    special: /[^A-Za-z0-9]/.test(newPassword),
+  });
+  const pwAllPassed = $derived(Object.values(pwChecks).every(Boolean));
+  const pwStrength = $derived(Object.values(pwChecks).filter(Boolean).length);
+  const pwStrengthLabel = $derived(
+    pwStrength <= 2 ? 'Weak' : pwStrength <= 3 ? 'Fair' : pwStrength === 4 ? 'Good' : 'Strong'
+  );
 
   const downloadLinks = [
     { label: 'Windows', url: 'https://tailscale.com/download/windows' },
@@ -54,13 +77,44 @@
     connectionStore.transition('AUTHENTICATING');
     try {
       const result = await login(normalizedUrl, username, password);
-      await authStore.setAuth(normalizedUrl, username, result.token, result.role ?? null, result.cluster_id ?? null);
-      connectionStore.transition('CLUSTER_SELECT');
+      if (result.must_change_password) {
+        pendingUrl = normalizedUrl;
+        pendingToken = result.token;
+        pendingLoginResult = result;
+        mustChangePassword = true;
+        connectionStore.transition('IDLE');
+      } else {
+        await authStore.setAuth(normalizedUrl, username, result.token, result.role ?? null, result.cluster_id ?? null);
+        connectionStore.transition('CLUSTER_SELECT');
+      }
     } catch (e) {
       error = e.message || 'Login failed. Check URL and credentials.';
       connectionStore.transition('IDLE');
     } finally {
       loading = false;
+    }
+  }
+
+  async function handleChangePassword() {
+    changeError = '';
+    if (!pwAllPassed) {
+      changeError = 'Password does not meet requirements.';
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      changeError = 'Passwords do not match.';
+      return;
+    }
+    changeLoading = true;
+    try {
+      await changePassword(pendingUrl, pendingToken, password, newPassword);
+      // Password changed — complete login flow
+      await authStore.setAuth(pendingUrl, username, pendingToken, pendingLoginResult.role ?? null, pendingLoginResult.cluster_id ?? null);
+      connectionStore.transition('CLUSTER_SELECT');
+    } catch (e) {
+      changeError = e.message || 'Failed to change password.';
+    } finally {
+      changeLoading = false;
     }
   }
 </script>
@@ -81,7 +135,93 @@
   <!-- Divider -->
   <div class="mx-6 h-px" style="background: var(--color-np-border-dim);"></div>
 
-  {#if tailscaleFound === false}
+  {#if mustChangePassword}
+    <!-- Force password change form -->
+    <div class="flex flex-col gap-3 px-6 pt-5 pb-6 flex-1 overflow-y-auto">
+      <div class="flex items-start gap-2.5 rounded-lg p-3"
+           style="background: var(--color-np-amber-dim); border: 1px solid color-mix(in srgb, var(--color-np-amber) 20%, transparent);">
+        <Lock size={13} class="shrink-0 mt-0.5 text-np-amber" />
+        <div class="min-w-0">
+          <p class="text-xs font-medium text-np-amber leading-tight">Password change required</p>
+          <p class="text-xs text-np-muted leading-relaxed mt-0.5">
+            Your account requires a new password before you can continue.
+          </p>
+        </div>
+      </div>
+
+      <div class="flex flex-col gap-1.5">
+        <label class="text-xs text-np-muted font-medium">New password</label>
+        <input
+          type="password"
+          class="np-input"
+          bind:value={newPassword}
+          placeholder="••••••••"
+          disabled={changeLoading}
+          autocomplete="new-password"
+        />
+
+        {#if newPassword.length > 0}
+          <div class="flex gap-1 mt-1 items-center">
+            {#each Array(5) as _, i}
+              <div class="h-0.5 flex-1 rounded-full transition-colors"
+                   style="background: {i < pwStrength ? 'var(--color-np-green)' : 'var(--color-np-border)'}"></div>
+            {/each}
+            <span class="text-xs text-np-muted ml-1">{pwStrengthLabel}</span>
+          </div>
+          <div class="grid grid-cols-2 gap-x-3 gap-y-0.5 mt-1">
+            {#each [
+              ['length',  '8+ characters'],
+              ['upper',   'Uppercase (A-Z)'],
+              ['lower',   'Lowercase (a-z)'],
+              ['digit',   'Number (0-9)'],
+              ['special', 'Special (!@#$)'],
+            ] as [key, label]}
+              <div class="flex items-center gap-1 text-xs"
+                   style="color: {pwChecks[key] ? 'var(--color-np-green)' : 'var(--color-np-muted)'}">
+                {#if pwChecks[key]}
+                  <svg class="w-2.5 h-2.5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="20 6 9 17 4 12"/></svg>
+                {:else}
+                  <div class="w-2.5 h-2.5 shrink-0 rounded-full border border-current opacity-40"></div>
+                {/if}
+                {label}
+              </div>
+            {/each}
+          </div>
+        {/if}
+      </div>
+
+      <div class="flex flex-col gap-1.5">
+        <label class="text-xs text-np-muted font-medium">Confirm password</label>
+        <input
+          type="password"
+          class="np-input"
+          bind:value={confirmPassword}
+          placeholder="••••••••"
+          disabled={changeLoading}
+          autocomplete="new-password"
+          style={confirmPassword && confirmPassword !== newPassword ? 'border-color: var(--color-np-red)' : ''}
+        />
+        {#if confirmPassword && confirmPassword !== newPassword}
+          <p class="text-xs text-np-red">Passwords do not match.</p>
+        {/if}
+      </div>
+
+      {#if changeError}
+        <p class="text-xs text-np-red">{changeError}</p>
+      {/if}
+
+      <button
+        onclick={handleChangePassword}
+        disabled={changeLoading || !pwAllPassed || newPassword !== confirmPassword}
+        class="np-btn-primary mt-auto"
+      >
+        {changeLoading ? 'Updating…' : 'Set New Password'}
+      </button>
+
+      <p class="text-center text-xs text-np-subtle">NodePulse IDP by Ussi</p>
+    </div>
+
+  {:else if tailscaleFound === false}
     <!-- Tailscale not found — download prompt -->
     <div class="flex flex-col gap-4 px-6 pt-5 pb-6 flex-1">
       <div class="flex items-start gap-2.5 rounded-lg p-3"

@@ -107,6 +107,22 @@ export async function registerDevice(nodepulseUrl, token, payload) {
   );
 }
 
+/**
+ * POST /api/v1/auth/change-password
+ * Changes the authenticated user's password.
+ */
+export async function changePassword(nodepulseUrl, token, currentPassword, newPassword) {
+  return apiFetch(
+    nodepulseUrl,
+    '/api/v1/auth/change-password',
+    {
+      method: 'POST',
+      body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
+    },
+    token,
+  );
+}
+
 /** Returns "windows" | "macos" | "linux" based on navigator.platform */
 export function detectPlatform() {
   const p = navigator.platform.toLowerCase();

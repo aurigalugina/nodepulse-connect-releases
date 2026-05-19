@@ -148,6 +148,7 @@ Utility classes: `.np-input`, `.np-btn-primary`, `.np-btn-ghost`, `.np-btn-dange
 - `detect_tailscale` — check tailscale installed
 - `tailscale_up` / `tailscale_down` / `tailscale_status` — mesh join/leave/status
 - `set_tray_connected` — tray icon state
+- `get_device_identity` — returns `{ machine_id, mac_address }` cross-platform (Linux: /etc/machine-id; macOS: ioreg; Windows: reg query MachineGuid); fail-safe, returns empty strings on error; called fire-and-forget after CONNECTED transition, passed to `registerDevice`
 
 ## DO NOT
 - Jangan pakai httpOnly cookie — desktop app pakai Bearer token

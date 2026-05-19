@@ -2,6 +2,7 @@ mod commands;
 mod tray;
 
 use commands::{
+    identity::get_device_identity,
     storage::{clear_auth_token, read_config, write_config},
     tailscale::{detect_tailscale, tailscale_down, tailscale_status, tailscale_up},
 };
@@ -30,6 +31,8 @@ pub fn run() {
             clear_auth_token,
             // Tray
             set_tray_connected,
+            // Identity
+            get_device_identity,
         ])
         .run(tauri::generate_context!())
         .expect("error while running NodePulse Connect");

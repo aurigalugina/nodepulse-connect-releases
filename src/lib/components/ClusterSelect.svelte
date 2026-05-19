@@ -125,12 +125,17 @@
       await invoke('set_tray_connected', { connected: true });
 
       // Fire-and-forget: register device so web panel can track it
-      getVersion().then(appVersion =>
+      Promise.all([
+        getVersion(),
+        invoke('get_device_identity').catch(() => ({ machine_id: '', mac_address: '' })),
+      ]).then(([appVersion, identity]) =>
         registerDevice(authStore.url, authStore.token, {
           hostname:    (deviceName.trim() || authStore.config.device_name),
           platform:    detectPlatform(),
           app_version: appVersion,
           mesh_ip:     status.mesh_ip ?? '',
+          machine_id:  identity.machine_id ?? '',
+          mac_address: identity.mac_address ?? '',
         })
       ).catch(() => { /* non-fatal */ });
     } catch (e) {

@@ -2,7 +2,6 @@
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "NodePulse Connect",
   "version": "0.1.0",
-  "description": "NodePulse Connect is a desktop application that provides a user-friendly interface for managing and monitoring your NodePulse network. With Connect, you can easily view the status of your nodes, manage your network settings, and receive real-time notifications about important events.",
   "identifier": "id.ussi.nodepulse-connect",
   "build": {
     "beforeDevCommand": "npm run dev",

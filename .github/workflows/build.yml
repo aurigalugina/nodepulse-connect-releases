@@ -75,10 +75,15 @@ jobs:
           $url = "https://pkgs.tailscale.com/stable/tailscale-setup-latest.exe"
           Write-Host "Downloading Tailscale installer from $url"
           Invoke-WebRequest -Uri $url -OutFile ts-setup.exe -UseBasicParsing
-          # Extract NSIS installer with 7-zip
-          7z x ts-setup.exe -ots_extracted -y
-          Write-Host "=== Extracted files ==="
-          Get-ChildItem ts_extracted -Recurse | Select-Object FullName | Format-Table -AutoSize
+          # Layer 1: extract Burn bootstrapper
+          7z x ts-setup.exe -ots_l1 -y | Out-Null
+          # Layer 2: extract each inner package (u0-u5 are MSI/CAB payloads)
+          Get-ChildItem ts_l1 | ForEach-Object {
+            Write-Host "=== Extracting $($_.Name) ==="
+            7z x $_.FullName -ots_l2 -y 2>&1 | Select-Object -Last 3
+          }
+          Write-Host "=== All extracted files ==="
+          Get-ChildItem ts_l2 -Recurse | Select-Object -ExpandProperty FullName
           exit 0
 
       - name: Install npm dependencies

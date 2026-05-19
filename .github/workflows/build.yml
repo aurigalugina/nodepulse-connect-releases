@@ -76,16 +76,10 @@ jobs:
           Write-Host "Downloading Tailscale installer from $url"
           Invoke-WebRequest -Uri $url -OutFile ts-setup.exe -UseBasicParsing
           # Extract NSIS installer with 7-zip
-          7z x ts-setup.exe -ots_extracted -y | Out-Null
-          New-Item -ItemType Directory -Force -Path src-tauri/binaries | Out-Null
-          $tailscale  = Get-ChildItem ts_extracted -Recurse | Where-Object { $_.Name -eq "tailscale.exe"  } | Select-Object -First 1
-          $tailscaled = Get-ChildItem ts_extracted -Recurse | Where-Object { $_.Name -eq "tailscaled.exe" } | Select-Object -First 1
-          if (-not $tailscale)  { Write-Error "tailscale.exe not found in installer";  exit 1 }
-          if (-not $tailscaled) { Write-Error "tailscaled.exe not found in installer"; exit 1 }
-          Copy-Item $tailscale.FullName  "src-tauri/binaries/tailscale-x86_64-pc-windows-msvc.exe"
-          Copy-Item $tailscaled.FullName "src-tauri/binaries/tailscaled-x86_64-pc-windows-msvc.exe"
-          Write-Host "Staged: $($tailscale.FullName)"
-          Write-Host "Staged: $($tailscaled.FullName)"
+          7z x ts-setup.exe -ots_extracted -y
+          Write-Host "=== Extracted files ==="
+          Get-ChildItem ts_extracted -Recurse | Select-Object FullName | Format-Table -AutoSize
+          exit 0
 
       - name: Install npm dependencies
         run: npm ci

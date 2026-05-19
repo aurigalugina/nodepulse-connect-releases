@@ -71,15 +71,17 @@ jobs:
         if: matrix.platform == 'windows-latest'
         shell: pwsh
         run: |
-          $ver = "1.80.2"
-          $url = "https://pkgs.tailscale.com/stable/tailscale_${ver}_windows_amd64.zip"
+          $latest = Invoke-RestMethod "https://api.github.com/repos/tailscale/tailscale/releases/latest"
+          $ver = $latest.tag_name.TrimStart('v')
+          $url = "https://github.com/tailscale/tailscale/releases/download/v${ver}/tailscale_${ver}_windows_amd64.zip"
+          Write-Host "Downloading Tailscale v$ver from $url"
           Invoke-WebRequest -Uri $url -OutFile ts.zip -UseBasicParsing
           Expand-Archive ts.zip -DestinationPath ts_extracted -Force
           New-Item -ItemType Directory -Force -Path src-tauri/binaries | Out-Null
           $base = "ts_extracted/tailscale_${ver}_windows_amd64"
           Copy-Item "$base/tailscale.exe"  "src-tauri/binaries/tailscale-x86_64-pc-windows-msvc.exe"
           Copy-Item "$base/tailscaled.exe" "src-tauri/binaries/tailscaled-x86_64-pc-windows-msvc.exe"
-          Write-Host "Tailscale binaries staged"
+          Write-Host "Tailscale binaries staged (v$ver)"
 
       - name: Install npm dependencies
         run: npm ci

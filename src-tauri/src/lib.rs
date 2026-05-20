@@ -1,10 +1,12 @@
 mod commands;
 mod tray;
 
+use tauri::Manager;
+
 use commands::{
     identity::get_device_identity,
     storage::{clear_auth_token, read_config, write_config},
-    tailscale::{detect_tailscale, tailscale_down, tailscale_status, tailscale_up},
+    tailscale::{ensure_tailscale, tailscale_down, tailscale_is_ready, tailscale_status, tailscale_up, DaemonHandle},
 };
 use tray::{set_tray_connected, setup_tray};
 
@@ -15,13 +17,17 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        .manage(DaemonHandle::new())
         .setup(|app| {
             setup_tray(&app.handle())?;
+            // Start tailscaled if already downloaded; noop on first launch (binary absent).
+            commands::tailscale::start_daemon(&app.handle());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             // Tailscale
-            detect_tailscale,
+            tailscale_is_ready,
+            ensure_tailscale,
             tailscale_status,
             tailscale_up,
             tailscale_down,
@@ -34,6 +40,12 @@ pub fn run() {
             // Identity
             get_device_identity,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running NodePulse Connect");
+        .build(tauri::generate_context!())
+        .expect("error building NodePulse Connect")
+        .run(|app_handle, event| {
+            if let tauri::RunEvent::Exit = event {
+                // Kill the isolated tailscaled daemon on app exit.
+                app_handle.state::<DaemonHandle>().kill();
+            }
+        });
 }

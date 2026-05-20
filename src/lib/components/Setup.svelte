@@ -1,6 +1,4 @@
 <script>
-  import { invoke } from '@tauri-apps/api/core';
-  import { open } from '@tauri-apps/plugin-shell';
   import { getVersion } from '@tauri-apps/api/app';
 
   let appVersion = $state('');
@@ -8,19 +6,17 @@
   import { authStore } from '$lib/stores/authStore.svelte.js';
   import { connectionStore } from '$lib/stores/connectionStore.svelte.js';
   import { login, changePassword } from '$lib/api/nodepulse.js';
-  import { AlertTriangle, Download, RefreshCw, Lock } from 'lucide-svelte';
+  import { Lock } from 'lucide-svelte';
 
   let url = $state(authStore.config.nodepulse_url ?? '');
   let username = $state(authStore.config.username ?? '');
   let password = $state('');
   let error = $state('');
   let loading = $state(false);
-  let tailscaleFound = $state(null);
-  let checking = $state(true);
 
   // Force password change state
   let mustChangePassword = $state(false);
-  let pendingToken = $state('');   // JWT from login, used to call change-password
+  let pendingToken = $state('');
   let pendingUrl = $state('');
   let pendingLoginResult = $state(null);
   let newPassword = $state('');
@@ -40,36 +36,6 @@
   const pwStrengthLabel = $derived(
     pwStrength <= 2 ? 'Weak' : pwStrength <= 3 ? 'Fair' : pwStrength === 4 ? 'Good' : 'Strong'
   );
-
-  const downloadLinks = [
-    { label: 'Windows', url: 'https://tailscale.com/download/windows' },
-    { label: 'macOS',   url: 'https://tailscale.com/download/mac' },
-    { label: 'Linux',   url: 'https://tailscale.com/download/linux' },
-  ];
-
-  function detectPrimaryPlatform() {
-    const p = navigator.platform?.toLowerCase() ?? '';
-    if (p.startsWith('win')) return 'Windows';
-    if (p.startsWith('mac')) return 'macOS';
-    return 'Linux';
-  }
-
-  const primaryPlatform = detectPrimaryPlatform();
-  const primaryDownloadLink = $derived(downloadLinks.find(l => l.label === primaryPlatform));
-
-  async function checkTailscale() {
-    checking = true;
-    try {
-      await invoke('detect_tailscale');
-      tailscaleFound = true;
-    } catch {
-      tailscaleFound = false;
-    } finally {
-      checking = false;
-    }
-  }
-
-  $effect(() => { checkTailscale(); });
 
   async function handleSubmit() {
     error = '';
@@ -221,59 +187,6 @@
         class="np-btn-primary mt-auto"
       >
         {changeLoading ? 'Updating…' : 'Set New Password'}
-      </button>
-
-      <p class="text-center text-xs text-np-subtle">NodePulse IDP by Ussi{#if appVersion} · v{appVersion}{/if}</p>
-    </div>
-
-  {:else if tailscaleFound === false}
-    <!-- Tailscale not found — download prompt -->
-    <div class="flex flex-col gap-4 px-6 pt-5 pb-6 flex-1">
-      <div class="flex items-start gap-2.5 rounded-lg p-3"
-           style="background: var(--color-np-amber-dim); border: 1px solid color-mix(in srgb, var(--color-np-amber) 20%, transparent);">
-        <AlertTriangle size={13} class="shrink-0 mt-0.5 text-np-amber" />
-        <div class="min-w-0">
-          <p class="text-xs font-medium text-np-amber leading-tight">Tailscale not detected</p>
-          <p class="text-xs text-np-muted leading-relaxed mt-0.5">
-            Tailscale must be installed before you can join the mesh network.
-          </p>
-        </div>
-      </div>
-
-      <div class="flex flex-col gap-2">
-        <p class="text-xs text-np-muted font-medium">Download Tailscale</p>
-
-        <!-- Primary platform — prominent -->
-        {#if primaryDownloadLink}
-          <button
-            onclick={() => open(primaryDownloadLink.url)}
-            class="np-btn-primary flex items-center justify-center gap-2"
-          >
-            <Download size={13} />
-            Download for {primaryDownloadLink.label}
-          </button>
-        {/if}
-
-        <!-- Other platforms — subtle links -->
-        <div class="flex gap-2 justify-center">
-          {#each downloadLinks.filter(l => l.label !== primaryPlatform) as link}
-            <button
-              onclick={() => open(link.url)}
-              class="text-xs text-np-muted hover:text-np-text underline underline-offset-2 transition-colors"
-            >
-              {link.label}
-            </button>
-          {/each}
-        </div>
-      </div>
-
-      <button
-        onclick={checkTailscale}
-        disabled={checking}
-        class="np-btn-ghost flex items-center justify-center gap-2 mt-auto"
-      >
-        <RefreshCw size={12} class={checking ? 'animate-spin' : ''} />
-        {checking ? 'Checking…' : "I've installed Tailscale"}
       </button>
 
       <p class="text-center text-xs text-np-subtle">NodePulse IDP by Ussi{#if appVersion} · v{appVersion}{/if}</p>

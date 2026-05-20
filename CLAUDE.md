@@ -8,7 +8,7 @@ Desktop app untuk personal devices (engineer Ussi / staff BPR) agar bisa join me
 - `@tauri-apps/api` v2, `@tauri-apps/plugin-fs`, `@tauri-apps/plugin-store`
 - `@tauri-apps/plugin-updater` v2 — auto-update via MinIO manifest
 - `@tauri-apps/plugin-process` v2 — `relaunch()` after update install
-- Tailscale (system-installed, required) — dipanggil via Tauri invoke commands. User wajib install Tailscale terlebih dahulu di semua platform (Windows/macOS/Linux).
+- Tailscale **bundled sebagai sidecar** (`src-tauri/binaries/`) — user tidak perlu install Tailscale. App spawn daemon-nya sendiri (`tailscaled --tun=userspace-networking --socket=<isolated>`) saat startup dan kill saat exit. System Tailscale tidak tahu koneksi ini sama sekali.
 
 ## Distribution & Auto-Update
 
@@ -104,7 +104,8 @@ Dua jenis user (dari JWT `role` field):
 | `src/lib/stores/authStore.svelte.js` | Config persist (url, username, token, role, cluster_id, device_name) |
 | `src/lib/stores/connectionStore.svelte.js` | State machine, tailscale status polling, tray sync |
 | `src/lib/api/nodepulse.js` | NodePulse REST client: login, getClusters, getNetworkConfig, generateNetworkKey, registerDevice, changePassword |
-| `src/lib/components/Setup.svelte` | Login form — detect tailscale, handle must_change_password (inline form), save role + cluster_id |
+| `src/lib/components/Setup.svelte` | Login form — handle must_change_password (inline form), save role + cluster_id |
+| `src/lib/components/TailscaleSetup.svelte` | First-run download screen — progress bar, retry on error |
 | `src/lib/components/ClusterSelect.svelte` | Cluster picker for admin/operator; auto-join for client role |
 | `src/lib/components/Connecting.svelte` | Progress steps display (GENERATING_KEY + TAILSCALE_UP states) |
 | `src/lib/components/Connected.svelte` | Connected state — mesh IP, node list, disconnect button |
@@ -145,10 +146,40 @@ Utility classes: `.np-input`, `.np-btn-primary`, `.np-btn-ghost`, `.np-btn-dange
 
 ## Tauri Commands Used
 - `read_config` / `write_config` / `clear_auth_token` — config persistence
-- `detect_tailscale` — check tailscale installed
-- `tailscale_up` / `tailscale_down` / `tailscale_status` — mesh join/leave/status
+- `tailscale_is_ready` — cek apakah binary sudah ada di app data dir (bool)
+- `ensure_tailscale` — download + extract Tailscale ke app data dir; emit `tailscale-setup` events
+- `tailscale_up` / `tailscale_down` / `tailscale_status` — mesh join/leave/status (semua via isolated socket)
 - `set_tray_connected` — tray icon state
-- `get_device_identity` — returns `{ machine_id, mac_address }` cross-platform (Linux: /etc/machine-id; macOS: ioreg; Windows: reg query MachineGuid); fail-safe, returns empty strings on error; called fire-and-forget after CONNECTED transition, passed to `registerDevice`
+- `get_device_identity` — returns `{ machine_id, mac_address }` cross-platform; fail-safe; fire-and-forget setelah CONNECTED
+
+## Isolated Tailscale Daemon (v0.3.0)
+
+`tailscaled` dan `tailscale` **didownload otomatis saat pertama kali launch** ke `<AppData>/tailscale-bin/`. App spawn daemon saat startup (noop jika belum download), kill saat exit.
+
+```
+tailscaled --tun=userspace-networking --socket=<isolated> --statedir=<AppData>/tailscale-state
+tailscale   --socket=<isolated> up/status/logout ...
+```
+
+**Binary path:**
+- Windows: `%APPDATA%\id.ussi.nodepulse-connect\tailscale-bin\tailscaled.exe`
+- macOS: `~/Library/Application Support/id.ussi.nodepulse-connect/tailscale-bin/tailscaled`
+- Linux: `~/.local/share/id.ussi.nodepulse-connect/tailscale-bin/tailscaled`
+
+**Socket path:**
+- Windows: `\\.\pipe\NodePulseConnect\tailscaled`
+- macOS/Linux: `<AppData>/tailscale-state/tailscaled.sock`
+
+**First-run flow:**
+1. `App.svelte` call `tailscale_is_ready` → false → tampilkan `TailscaleSetup.svelte`
+2. `TailscaleSetup` call `ensure_tailscale` → download ~25MB tarball/zip dari `pkgs.tailscale.com`
+3. Extract ke `<AppData>/tailscale-bin/`, set executable bit, clear macOS quarantine
+4. `start_daemon()` dipanggil dari `ensure_tailscale` → daemon running
+5. `onReady()` callback → App.svelte tampilkan login form normal
+
+**Local dev setup:** langsung `npm run tauri dev` — app akan download binary saat pertama kali jalan.
+
+**CI:** `build.yml` tidak perlu download binary — tidak ada sidecar, binary didownload oleh app.
 
 ## DO NOT
 - Jangan pakai httpOnly cookie — desktop app pakai Bearer token

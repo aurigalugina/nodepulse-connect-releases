@@ -1,1 +1,4 @@
 binaries/*.exe
+
+# git ignore /src-tauri/targets/ directory, which contains the built Tauri app
+/src-tauri/target/

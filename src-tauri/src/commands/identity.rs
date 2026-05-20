@@ -1,5 +1,3 @@
-use std::process::Command;
-
 /// Cross-platform machine ID (stable per-install device fingerprint).
 /// Returns empty string on failure — never blocks mesh join.
 fn read_machine_id() -> String {
@@ -12,7 +10,7 @@ fn read_machine_id() -> String {
     }
     #[cfg(target_os = "macos")]
     {
-        let out = Command::new("ioreg")
+        let out = std::process::Command::new("ioreg")
             .args(["-rd1", "-c", "IOPlatformExpertDevice"])
             .output()
             .ok();
@@ -34,7 +32,7 @@ fn read_machine_id() -> String {
     }
     #[cfg(target_os = "windows")]
     {
-        let out = Command::new("reg")
+        let out = std::process::Command::new("reg")
             .args([
                 "query",
                 r"HKLM\SOFTWARE\Microsoft\Cryptography",
@@ -67,9 +65,6 @@ fn read_machine_id() -> String {
 fn read_primary_mac() -> String {
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
-        use std::net::UdpSocket;
-        // Use a UDP connect trick to find the primary outbound interface name,
-        // then parse MAC from /sys (Linux) or ifconfig (macOS).
         #[cfg(target_os = "linux")]
         {
             // Read from /sys/class/net — pick first non-loopback UP interface with a MAC.
@@ -100,7 +95,7 @@ fn read_primary_mac() -> String {
         }
         #[cfg(target_os = "macos")]
         {
-            let out = Command::new("ifconfig").output().ok();
+            let out = std::process::Command::new("ifconfig").output().ok();
             if let Some(o) = out {
                 let text = String::from_utf8_lossy(&o.stdout);
                 let mut current_up = false;
@@ -123,7 +118,7 @@ fn read_primary_mac() -> String {
     }
     #[cfg(target_os = "windows")]
     {
-        let out = Command::new("getmac")
+        let out = std::process::Command::new("getmac")
             .args(["/fo", "csv", "/nh"])
             .output()
             .ok();

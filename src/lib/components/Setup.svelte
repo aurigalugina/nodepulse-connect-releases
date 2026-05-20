@@ -1,6 +1,10 @@
 <script>
   import { invoke } from '@tauri-apps/api/core';
   import { open } from '@tauri-apps/plugin-shell';
+  import { getVersion } from '@tauri-apps/api/app';
+
+  let appVersion = $state('');
+  getVersion().then(v => appVersion = v).catch(() => {});
   import { authStore } from '$lib/stores/authStore.svelte.js';
   import { connectionStore } from '$lib/stores/connectionStore.svelte.js';
   import { login, changePassword } from '$lib/api/nodepulse.js';
@@ -219,7 +223,7 @@
         {changeLoading ? 'Updating…' : 'Set New Password'}
       </button>
 
-      <p class="text-center text-xs text-np-subtle">NodePulse IDP by Ussi</p>
+      <p class="text-center text-xs text-np-subtle">NodePulse IDP by Ussi{#if appVersion} · v{appVersion}{/if}</p>
     </div>
 
   {:else if tailscaleFound === false}
@@ -272,7 +276,7 @@
         {checking ? 'Checking…' : "I've installed Tailscale"}
       </button>
 
-      <p class="text-center text-xs text-np-subtle">NodePulse IDP by Ussi</p>
+      <p class="text-center text-xs text-np-subtle">NodePulse IDP by Ussi{#if appVersion} · v{appVersion}{/if}</p>
     </div>
 
   {:else}
@@ -333,7 +337,7 @@
         {loading ? 'Authenticating…' : 'Sign In'}
       </button>
 
-      <p class="text-center text-xs text-np-subtle">NodePulse IDP by Ussi</p>
+      <p class="text-center text-xs text-np-subtle">NodePulse IDP by Ussi{#if appVersion} · v{appVersion}{/if}</p>
     </form>
   {/if}
 </div>

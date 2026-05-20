@@ -3,6 +3,10 @@
   import { connectionStore } from '$lib/stores/connectionStore.svelte.js';
   import { getClusterNodes } from '$lib/api/nodepulse.js';
   import { Wifi, WifiOff, LogOut, ArrowLeftRight, RefreshCw } from 'lucide-svelte';
+  import { getVersion } from '@tauri-apps/api/app';
+
+  let appVersion = $state('');
+  getVersion().then(v => appVersion = v).catch(() => {});
 
   /** @type {{ id: string, hostname: string, status: string }[]} */
   let nodes = $state([]);
@@ -126,4 +130,11 @@
       Switch
     </button>
   </div>
+
+  <!-- Version footer -->
+  {#if appVersion}
+    <p class="text-center text-[10px] pb-3" style="color: var(--color-np-subtle);">
+      v{appVersion}
+    </p>
+  {/if}
 </div>

@@ -63,21 +63,22 @@ pub fn tailscale_is_ready(app: tauri::AppHandle) -> bool {
 
 fn build_download_url() -> String {
     let v = TAILSCALE_VERSION;
+    let base = format!("https://github.com/tailscale/tailscale/releases/download/v{v}");
 
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-    { return format!("https://pkgs.tailscale.com/stable/tailscale_{v}_amd64.tgz"); }
+    { return format!("{base}/tailscale_{v}_amd64.tgz"); }
 
     #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
-    { return format!("https://pkgs.tailscale.com/stable/tailscale_{v}_arm64.tgz"); }
+    { return format!("{base}/tailscale_{v}_arm64.tgz"); }
 
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-    { return format!("https://pkgs.tailscale.com/stable/tailscale_{v}_darwin_arm64.tgz"); }
+    { return format!("{base}/tailscale_{v}_darwin_arm64.tgz"); }
 
     #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
-    { return format!("https://pkgs.tailscale.com/stable/tailscale_{v}_darwin_amd64.tgz"); }
+    { return format!("{base}/tailscale_{v}_darwin_amd64.tgz"); }
 
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
-    { return format!("https://pkgs.tailscale.com/stable/tailscale_{v}_windows_amd64.zip"); }
+    { return format!("{base}/tailscale_{v}_windows_amd64.zip"); }
 
     panic!("unsupported platform")
 }

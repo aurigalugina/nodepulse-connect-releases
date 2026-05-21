@@ -3,8 +3,6 @@ use std::sync::Mutex;
 use tauri::{Emitter, Manager};
 use serde::{Deserialize, Serialize};
 
-const TAILSCALE_VERSION: &str = "1.66.4";
-
 // ── Daemon state ───────────────────────────────────────────────────────────────
 
 pub struct DaemonHandle {
@@ -24,31 +22,70 @@ impl DaemonHandle {
     }
 }
 
-// ── Platform paths ─────────────────────────────────────────────────────────────
+// ── Binary paths ───────────────────────────────────────────────────────────────
 
+// Linux: Tailscale is downloaded at runtime to app data dir.
+#[cfg(target_os = "linux")]
 fn bin_dir(app: &tauri::AppHandle) -> PathBuf {
     app.path().app_data_dir().expect("app data dir").join("tailscale-bin")
 }
 
-#[cfg(windows)]
-fn tailscaled_bin(app: &tauri::AppHandle) -> PathBuf { bin_dir(app).join("tailscaled.exe") }
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
 fn tailscaled_bin(app: &tauri::AppHandle) -> PathBuf { bin_dir(app).join("tailscaled") }
-
-#[cfg(windows)]
-fn tailscale_bin(app: &tauri::AppHandle) -> PathBuf { bin_dir(app).join("tailscale.exe") }
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
 fn tailscale_bin(app: &tauri::AppHandle) -> PathBuf { bin_dir(app).join("tailscale") }
+
+// Windows / macOS: Tailscale is bundled in the app installer via externalBin.
+#[cfg(not(target_os = "linux"))]
+fn tailscaled_bin(_app: &tauri::AppHandle) -> PathBuf { bundled_bin("tailscaled") }
+#[cfg(not(target_os = "linux"))]
+fn tailscale_bin(_app: &tauri::AppHandle) -> PathBuf { bundled_bin("tailscale") }
+
+/// Find a sidecar binary bundled via Tauri externalBin.
+/// Dev build  → src-tauri/binaries/<name>-<triple>[.exe]
+/// Production → same directory as the main executable (no triple suffix)
+#[cfg(not(target_os = "linux"))]
+fn bundled_bin(name: &str) -> PathBuf {
+    // Dev: binary lives in src-tauri/binaries/ with the full target-triple suffix.
+    #[cfg(debug_assertions)]
+    {
+        let manifest = env!("CARGO_MANIFEST_DIR");
+        #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+        let triple_name = format!("{name}-x86_64-pc-windows-msvc.exe");
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        let triple_name = format!("{name}-aarch64-apple-darwin");
+        #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+        let triple_name = format!("{name}-x86_64-apple-darwin");
+        let p = PathBuf::from(manifest).join("binaries").join(&triple_name);
+        if p.exists() { return p; }
+    }
+    // Production: binary is placed next to the main executable (no triple suffix).
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            #[cfg(target_os = "windows")]
+            let p = dir.join(format!("{name}.exe"));
+            #[cfg(not(target_os = "windows"))]
+            let p = dir.join(name);
+            if p.exists() { return p; }
+        }
+    }
+    #[cfg(target_os = "windows")]
+    return PathBuf::from(format!("{name}.exe"));
+    #[cfg(not(target_os = "windows"))]
+    PathBuf::from(name)
+}
+
+// ── Shared paths ───────────────────────────────────────────────────────────────
 
 pub fn data_dir(app: &tauri::AppHandle) -> PathBuf {
     app.path().app_data_dir().expect("app data dir").join("tailscale-state")
 }
 
 pub fn socket_path(app: &tauri::AppHandle) -> String {
-    #[cfg(windows)]
+    #[cfg(target_os = "windows")]
     return r"\\.\pipe\NodePulseConnect\tailscaled".to_string();
 
-    #[cfg(not(windows))]
+    #[cfg(not(target_os = "windows"))]
     data_dir(app).join("tailscaled.sock").to_str().unwrap().to_string()
 }
 
@@ -59,63 +96,25 @@ pub fn tailscale_is_ready(app: tauri::AppHandle) -> bool {
     tailscaled_bin(&app).exists() && tailscale_bin(&app).exists()
 }
 
-// ── Download URL & subdir per platform ─────────────────────────────────────────
-
-fn build_download_url() -> String {
-    let v = TAILSCALE_VERSION;
-    let base = format!("https://github.com/tailscale/tailscale/releases/download/v{v}");
-
-    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-    { return format!("{base}/tailscale_{v}_amd64.tgz"); }
-
-    #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
-    { return format!("{base}/tailscale_{v}_arm64.tgz"); }
-
-    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-    { return format!("{base}/tailscale_{v}_darwin_arm64.tgz"); }
-
-    #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
-    { return format!("{base}/tailscale_{v}_darwin_amd64.tgz"); }
-
-    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
-    { return format!("{base}/tailscale_{v}_windows_amd64.zip"); }
-
-    panic!("unsupported platform")
-}
-
-fn extract_subdir() -> String {
-    let v = TAILSCALE_VERSION;
-
-    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-    { return format!("tailscale_{v}_amd64"); }
-
-    #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
-    { return format!("tailscale_{v}_arm64"); }
-
-    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-    { return format!("tailscale_{v}_darwin_arm64"); }
-
-    #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
-    { return format!("tailscale_{v}_darwin_amd64"); }
-
-    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
-    { return format!("tailscale_{v}_windows_amd64"); }
-
-    panic!("unsupported platform")
-}
-
-// ── Download & extract ─────────────────────────────────────────────────────────
+// ── ensure_tailscale — Linux: download; Windows/macOS: verify bundle ───────────
 
 #[tauri::command]
 pub async fn ensure_tailscale(app: tauri::AppHandle) -> Result<(), String> {
+    ensure_impl(app).await
+}
+
+// Linux: download Tailscale from pkgs.tailscale.com if not already present.
+#[cfg(target_os = "linux")]
+async fn ensure_impl(app: tauri::AppHandle) -> Result<(), String> {
     if tailscaled_bin(&app).exists() && tailscale_bin(&app).exists() {
         return Ok(());
     }
 
+    const VER: &str = "1.66.4";
     let dir = bin_dir(&app);
     std::fs::create_dir_all(&dir).map_err(|e| format!("create bin dir: {e}"))?;
 
-    let url = build_download_url();
+    let url = format!("https://pkgs.tailscale.com/stable/tailscale_{VER}_amd64.tgz");
     let _ = app.emit("tailscale-setup", serde_json::json!({"step": "downloading", "progress": 5}));
 
     let bytes = reqwest::get(&url)
@@ -133,71 +132,49 @@ pub async fn ensure_tailscale(app: tauri::AppHandle) -> Result<(), String> {
     let _ = std::fs::remove_dir_all(&tmp);
     std::fs::create_dir_all(&tmp).map_err(|e| format!("create tmp dir: {e}"))?;
 
-    #[cfg(not(windows))]
-    extract_tgz(&bytes, &tmp)?;
-    #[cfg(windows)]
-    extract_zip(&bytes, &tmp)?;
-
-    let sub = tmp.join(extract_subdir());
-
-    #[cfg(windows)]
     {
-        std::fs::copy(sub.join("tailscale.exe"),  tailscale_bin(&app))
-            .map_err(|e| format!("copy tailscale.exe: {e}"))?;
-        std::fs::copy(sub.join("tailscaled.exe"), tailscaled_bin(&app))
-            .map_err(|e| format!("copy tailscaled.exe: {e}"))?;
+        use flate2::read::GzDecoder;
+        use tar::Archive;
+        let gz = GzDecoder::new(std::io::Cursor::new(&bytes));
+        let mut archive = Archive::new(gz);
+        archive.unpack(&tmp).map_err(|e| format!("extract tgz: {e}"))?;
     }
-    #[cfg(not(windows))]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let ts_dst  = tailscale_bin(&app);
-        let tsd_dst = tailscaled_bin(&app);
-        std::fs::copy(sub.join("tailscale"),  &ts_dst)
-            .map_err(|e| format!("copy tailscale: {e}"))?;
-        std::fs::copy(sub.join("tailscaled"), &tsd_dst)
-            .map_err(|e| format!("copy tailscaled: {e}"))?;
-        std::fs::set_permissions(&ts_dst,  std::fs::Permissions::from_mode(0o755))
-            .map_err(|e| format!("chmod tailscale: {e}"))?;
-        std::fs::set_permissions(&tsd_dst, std::fs::Permissions::from_mode(0o755))
-            .map_err(|e| format!("chmod tailscaled: {e}"))?;
-        // Remove quarantine flag on macOS so Gatekeeper allows execution.
-        #[cfg(target_os = "macos")]
-        for p in &[&ts_dst, &tsd_dst] {
-            let _ = std::process::Command::new("xattr")
-                .args(["-d", "com.apple.quarantine", p.to_str().unwrap_or("")])
-                .status();
-        }
-    }
+
+    let sub = tmp.join(format!("tailscale_{VER}_amd64"));
+
+    use std::os::unix::fs::PermissionsExt;
+    let ts_dst  = tailscale_bin(&app);
+    let tsd_dst = tailscaled_bin(&app);
+    std::fs::copy(sub.join("tailscale"),  &ts_dst)
+        .map_err(|e| format!("copy tailscale: {e}"))?;
+    std::fs::copy(sub.join("tailscaled"), &tsd_dst)
+        .map_err(|e| format!("copy tailscaled: {e}"))?;
+    std::fs::set_permissions(&ts_dst,  std::fs::Permissions::from_mode(0o755))
+        .map_err(|e| format!("chmod tailscale: {e}"))?;
+    std::fs::set_permissions(&tsd_dst, std::fs::Permissions::from_mode(0o755))
+        .map_err(|e| format!("chmod tailscaled: {e}"))?;
 
     let _ = std::fs::remove_dir_all(&tmp);
     let _ = app.emit("tailscale-setup", serde_json::json!({"step": "done", "progress": 100}));
 
-    // Start daemon immediately so the app can proceed without a relaunch.
     start_daemon(&app);
     Ok(())
 }
 
-#[cfg(not(windows))]
-fn extract_tgz(bytes: &[u8], dest: &PathBuf) -> Result<(), String> {
-    use flate2::read::GzDecoder;
-    use tar::Archive;
-    let gz = GzDecoder::new(std::io::Cursor::new(bytes));
-    let mut archive = Archive::new(gz);
-    archive.unpack(dest).map_err(|e| format!("extract tgz: {e}"))
-}
-
-#[cfg(windows)]
-fn extract_zip(bytes: &[u8], dest: &PathBuf) -> Result<(), String> {
-    use zip::ZipArchive;
-    let mut archive = ZipArchive::new(std::io::Cursor::new(bytes))
-        .map_err(|e| format!("open zip: {e}"))?;
-    archive.extract(dest).map_err(|e| format!("extract zip: {e}"))
+// Windows / macOS: binaries are bundled — just verify presence.
+#[cfg(not(target_os = "linux"))]
+async fn ensure_impl(app: tauri::AppHandle) -> Result<(), String> {
+    if tailscaled_bin(&app).exists() && tailscale_bin(&app).exists() {
+        Ok(())
+    } else {
+        Err("Network components not found in application bundle. Please reinstall NodePulse Connect.".to_string())
+    }
 }
 
 // ── Daemon lifecycle ───────────────────────────────────────────────────────────
 
-/// Spawn tailscaled from the app data dir with isolated socket + userspace networking.
-/// Non-fatal — silently skips if binary not yet downloaded.
+/// Spawn tailscaled with isolated socket + userspace networking.
+/// Non-fatal — silently skips if binary not yet available.
 pub fn start_daemon(app: &tauri::AppHandle) {
     let bin = tailscaled_bin(app);
     if !bin.exists() {
@@ -208,8 +185,7 @@ pub fn start_daemon(app: &tauri::AppHandle) {
     let _ = std::fs::create_dir_all(&state_dir);
     let socket = socket_path(app);
 
-    // Remove stale socket from a previous run that didn't clean up.
-    #[cfg(not(windows))]
+    #[cfg(not(target_os = "windows"))]
     {
         let sock = PathBuf::from(&socket);
         if sock.exists() { let _ = std::fs::remove_file(&sock); }
@@ -226,7 +202,6 @@ pub fn start_daemon(app: &tauri::AppHandle) {
         .spawn()
     {
         Ok(child) => {
-            // Brief pause so the daemon binds its socket before first CLI call.
             std::thread::sleep(std::time::Duration::from_millis(500));
             if let Ok(mut g) = app.state::<DaemonHandle>().child.lock() {
                 *g = Some(child);

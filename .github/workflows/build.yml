@@ -70,11 +70,45 @@ jobs:
       - name: Install npm dependencies
         run: npm ci
 
+      # Windows: install Tailscale silently, copy binaries into src-tauri/binaries/
+      - name: Bundle Tailscale binaries (Windows)
+        if: matrix.platform == 'windows-latest'
+        shell: pwsh
+        run: |
+          $Ver = "1.66.4"
+          Invoke-WebRequest "https://pkgs.tailscale.com/stable/tailscale-setup-full-$Ver.exe" -OutFile ts-full.exe -UseBasicParsing
+          Start-Process ".\ts-full.exe" -ArgumentList "/S" -Wait
+          $tsDir = "${env:ProgramFiles}\Tailscale"
+          if (-not (Test-Path $tsDir)) { $tsDir = "${env:ProgramW6432}\Tailscale" }
+          New-Item -ItemType Directory -Force -Path src-tauri\binaries | Out-Null
+          Copy-Item "$tsDir\tailscale.exe"  "src-tauri\binaries\tailscale-x86_64-pc-windows-msvc.exe"
+          Copy-Item "$tsDir\tailscaled.exe" "src-tauri\binaries\tailscaled-x86_64-pc-windows-msvc.exe"
+          Remove-Item ts-full.exe -Force
+
+      # macOS: install Tailscale via Homebrew, copy binaries into src-tauri/binaries/
+      - name: Bundle Tailscale binaries (macOS)
+        if: matrix.platform == 'macos-latest'
+        run: |
+          brew install tailscale 2>/dev/null || brew upgrade tailscale 2>/dev/null || true
+          mkdir -p src-tauri/binaries
+          cp "$(brew --prefix tailscale)/bin/tailscale"  src-tauri/binaries/tailscale-aarch64-apple-darwin
+          cp "$(brew --prefix tailscale)/bin/tailscaled" src-tauri/binaries/tailscaled-aarch64-apple-darwin
+          chmod +x src-tauri/binaries/tailscale-aarch64-apple-darwin
+          chmod +x src-tauri/binaries/tailscaled-aarch64-apple-darwin
+
       - name: Build Tauri app
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: npm run tauri build
+        # Windows/macOS: merge externalBin sidecar config so bundled binaries are included.
+        # Linux: no externalBin — Tailscale is downloaded by the app at first launch.
+        run: |
+          if [[ "${{ matrix.platform }}" == "ubuntu-22.04" ]]; then
+            npm run tauri build
+          else
+            npm run tauri build -- -c src-tauri/tauri-sidecar-extra.json
+          fi
+        shell: bash
 
       # macOS: also create .app.tar.gz + sign it (Tauri v2 updater artifact for macOS)
       - name: Create macOS updater artifact

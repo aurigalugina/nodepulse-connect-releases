@@ -6,7 +6,7 @@ use tauri::Manager;
 use commands::{
     identity::get_device_identity,
     storage::{clear_auth_token, read_config, write_config},
-    tailscale::{ensure_tailscale, tailscale_down, tailscale_is_ready, tailscale_status, tailscale_up, DaemonHandle},
+    tailscale::{ensure_tailscale, get_daemon_log, tailscale_down, tailscale_is_ready, tailscale_status, tailscale_up, DaemonHandle},
 };
 use tray::{set_tray_connected, setup_tray};
 
@@ -31,6 +31,7 @@ pub fn run() {
             tailscale_status,
             tailscale_up,
             tailscale_down,
+            get_daemon_log,
             // Storage
             read_config,
             write_config,

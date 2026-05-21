@@ -192,6 +192,17 @@ async fn ensure_impl(app: tauri::AppHandle) -> Result<(), String> {
     }
 }
 
+// ── Daemon log ─────────────────────────────────────────────────────────────────
+
+fn daemon_log_path(app: &tauri::AppHandle) -> PathBuf {
+    data_dir(app).join("tailscaled.log")
+}
+
+fn read_daemon_log(app: &tauri::AppHandle) -> String {
+    let path = daemon_log_path(app);
+    std::fs::read_to_string(&path).unwrap_or_default()
+}
+
 // ── Daemon lifecycle ───────────────────────────────────────────────────────────
 
 /// Spawn tailscaled with isolated socket + userspace networking.
@@ -212,14 +223,32 @@ pub fn start_daemon(app: &tauri::AppHandle) {
         if sock.exists() { let _ = std::fs::remove_file(&sock); }
     }
 
+    // Redirect output to log file so we can diagnose failures.
+    let log_path = daemon_log_path(app);
+    let log_file = std::fs::OpenOptions::new()
+        .create(true).write(true).truncate(true)
+        .open(&log_path);
+
+    let (stdout_s, stderr_s) = match log_file {
+        Ok(f) => {
+            let f2 = f.try_clone()
+                .or_else(|_| std::fs::OpenOptions::new().append(true).open(&log_path))
+                .ok();
+            let stderr = f2.map(std::process::Stdio::from)
+                .unwrap_or_else(std::process::Stdio::null);
+            (std::process::Stdio::from(f), stderr)
+        }
+        Err(_) => (std::process::Stdio::null(), std::process::Stdio::null()),
+    };
+
     match std::process::Command::new(&bin)
         .args([
             "--tun=userspace-networking",
             "--socket", &socket,
             "--statedir", state_dir.to_str().unwrap_or(""),
         ])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
+        .stdout(stdout_s)
+        .stderr(stderr_s)
         .spawn()
     {
         Ok(child) => {
@@ -229,8 +258,16 @@ pub fn start_daemon(app: &tauri::AppHandle) {
                 *g = Some(child);
             }
         }
-        Err(e) => eprintln!("[tailscale] daemon spawn failed: {e}"),
+        Err(e) => {
+            let _ = std::fs::write(daemon_log_path(app), format!("daemon spawn failed: {e}"));
+            eprintln!("[tailscale] daemon spawn failed: {e}");
+        }
     }
+}
+
+#[tauri::command]
+pub fn get_daemon_log(app: tauri::AppHandle) -> String {
+    read_daemon_log(&app)
 }
 
 // ── CLI helper ─────────────────────────────────────────────────────────────────
@@ -285,6 +322,21 @@ pub async fn tailscale_up(
     hostname: String,
 ) -> Result<String, String> {
     let socket = socket_path(&app);
+
+    // Ensure daemon is alive before calling the CLI.
+    if !socket_is_ready(&socket) {
+        start_daemon(&app);
+        if !socket_is_ready(&socket) {
+            let log = read_daemon_log(&app);
+            let detail = if log.trim().is_empty() {
+                "No daemon output captured.".to_string()
+            } else {
+                format!("Daemon log:\n{}", &log[..log.len().min(600)])
+            };
+            return Err(format!("Tailscale daemon failed to start.\n{detail}"));
+        }
+    }
+
     let out = tokio::time::timeout(
         std::time::Duration::from_secs(60),
         tokio::process::Command::new(tailscale_bin(&app))

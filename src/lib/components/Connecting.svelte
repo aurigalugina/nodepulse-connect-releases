@@ -77,7 +77,7 @@
   <!-- Error + actions -->
   {#if error}
     <div class="flex flex-col gap-2">
-      <div class="rounded-lg p-3 text-xs text-np-red leading-relaxed"
+      <div class="rounded-lg p-3 text-xs text-np-red leading-relaxed overflow-y-auto max-h-28 whitespace-pre-wrap break-words"
            style="background: var(--color-np-red-dim); border: 1px solid color-mix(in srgb, var(--color-np-red) 20%, transparent);">
         {error}
       </div>

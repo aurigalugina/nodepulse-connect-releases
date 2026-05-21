@@ -2,3 +2,6 @@ binaries/*.exe
 
 # git ignore /src-tauri/targets/ directory, which contains the built Tauri app
 /src-tauri/target/
+
+/node_modules/
+# jangan commit apapun di dalam node_modules, karena itu akan sangat besar dan bisa menyebabkan masalah saat push ke repository

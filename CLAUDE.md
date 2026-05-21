@@ -187,7 +187,7 @@ tar = "0.4"
 ```
 
 ## Known Issues / Under Investigation
-- **Windows daemon startup** (v0.3.7, aktif): tailscaled.exe di Windows belum bisa binding ke named pipe. Log menunjukkan "failed to create local log directory" (non-fatal warning) — root cause belum diketahui. Logging ke `tailscaled.log` ditambahkan di v0.3.5 untuk diagnosis.
+- **Windows joining mesh slow** (v0.3.9): daemon sudah berhasil start dan bind named pipe, tapi "Joining mesh network..." phase memakan waktu lama. Ini inherent ke Windows userspace networking init. Max wait sekarang ~87s (15+10 iter × 3.5s) lalu `tailscale up` 60s timeout.
 
 ## DO NOT
 - Jangan pakai httpOnly cookie — desktop app pakai Bearer token

@@ -329,18 +329,24 @@ pub async fn tailscale_status(app: tauri::AppHandle) -> Result<TailscaleStatus, 
 
 /// Poll `tailscale status` until the daemon responds (or we run out of iterations).
 /// Unlike socket_is_ready, this verifies the daemon can actually process IPC — not just
-/// that a named pipe file exists.
+/// that a named pipe file exists. Each probe has a 3 s hard timeout so a slow daemon
+/// cannot inflate the total wait indefinitely.
 async fn daemon_can_respond(app: &tauri::AppHandle, max_iter: usize) -> bool {
     for _ in 0..max_iter {
-        if let Ok(out) = run_ts(app, &["status", "--json"]).await {
-            let stderr = String::from_utf8_lossy(&out.stderr);
-            // Any response that is NOT "failed to connect to tailscaled" means the daemon is up.
-            // (exit 1 is OK — it means "not connected to headscale", daemon is still running)
-            if !stderr.contains("failed to connect to local tailscaled") {
-                return true;
+        let probe = tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            run_ts(app, &["status", "--json"]),
+        ).await;
+        match probe {
+            Ok(Ok(out)) => {
+                let stderr = String::from_utf8_lossy(&out.stderr);
+                if !stderr.contains("failed to connect to local tailscaled") {
+                    return true;
+                }
             }
+            _ => {} // timeout or error — keep waiting
         }
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     }
     false
 }
@@ -356,10 +362,12 @@ pub async fn tailscale_up(
 
     // Wait for daemon to respond — use `tailscale status` as the real readiness test.
     // Named pipe File::open is unreliable (can return PIPE_BUSY even when daemon is alive).
-    let daemon_ready = daemon_can_respond(&app, 100).await; // up to 20 s
+    // Each iteration: 3s probe timeout + 0.5s sleep = ~3.5s max.
+    // 15 iterations ≈ 52s max before giving up.
+    let daemon_ready = daemon_can_respond(&app, 15).await;
 
     if !daemon_ready {
-        // Process may have died — restart, then wait another 15 s.
+        // Process may have died — restart, then wait another round.
         let child_dead = app.state::<DaemonHandle>().child.lock()
             .ok()
             .map(|mut g| g.as_mut()
@@ -371,7 +379,7 @@ pub async fn tailscale_up(
             start_daemon(&app);
         }
 
-        if !daemon_can_respond(&app, 75).await { // up to 15 s
+        if !daemon_can_respond(&app, 10).await { // ~35s more
             let log = read_daemon_log(&app);
             let detail = if log.trim().is_empty() {
                 "No daemon output captured.".to_string()

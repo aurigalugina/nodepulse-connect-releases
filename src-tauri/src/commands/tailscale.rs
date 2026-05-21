@@ -101,8 +101,11 @@ fn wait_for_socket(socket: &str) {
 
 #[cfg(target_os = "windows")]
 fn socket_is_ready(socket: &str) -> bool {
-    // Named pipe — try to open it
-    std::fs::File::open(socket).is_ok()
+    match std::fs::File::open(socket) {
+        Ok(_) => true,
+        // ERROR_PIPE_BUSY (231): pipe exists but no free instance right now — daemon IS running
+        Err(e) => e.raw_os_error() == Some(231),
+    }
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -324,6 +327,24 @@ pub async fn tailscale_status(app: tauri::AppHandle) -> Result<TailscaleStatus, 
     })
 }
 
+/// Poll `tailscale status` until the daemon responds (or we run out of iterations).
+/// Unlike socket_is_ready, this verifies the daemon can actually process IPC — not just
+/// that a named pipe file exists.
+async fn daemon_can_respond(app: &tauri::AppHandle, max_iter: usize) -> bool {
+    for _ in 0..max_iter {
+        if let Ok(out) = run_ts(app, &["status", "--json"]).await {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            // Any response that is NOT "failed to connect to tailscaled" means the daemon is up.
+            // (exit 1 is OK — it means "not connected to headscale", daemon is still running)
+            if !stderr.contains("failed to connect to local tailscaled") {
+                return true;
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+    false
+}
+
 #[tauri::command]
 pub async fn tailscale_up(
     app: tauri::AppHandle,
@@ -333,43 +354,33 @@ pub async fn tailscale_up(
 ) -> Result<String, String> {
     let socket = socket_path(&app);
 
-    // Ensure daemon is alive before calling the CLI.
-    // tailscaled on Windows can take 10-20 s to bind the named pipe — wait async.
-    if !socket_is_ready(&socket) {
-        // Phase 1: daemon is probably still starting — wait up to 15 s.
-        for _ in 0..75 {
-            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-            if socket_is_ready(&socket) { break; }
-        }
-    }
+    // Wait for daemon to respond — use `tailscale status` as the real readiness test.
+    // Named pipe File::open is unreliable (can return PIPE_BUSY even when daemon is alive).
+    let daemon_ready = daemon_can_respond(&app, 100).await; // up to 20 s
 
-    if !socket_is_ready(&socket) {
-        // Phase 2: child might have died — restart if so, then wait 10 s more.
-        let is_dead = app.state::<DaemonHandle>().child.lock()
+    if !daemon_ready {
+        // Process may have died — restart, then wait another 15 s.
+        let child_dead = app.state::<DaemonHandle>().child.lock()
             .ok()
             .map(|mut g| g.as_mut()
                 .map(|c| c.try_wait().ok().flatten().is_some())
                 .unwrap_or(true))
             .unwrap_or(true);
 
-        if is_dead {
+        if child_dead {
             start_daemon(&app);
-            for _ in 0..50 {
-                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-                if socket_is_ready(&socket) { break; }
-            }
         }
-    }
 
-    if !socket_is_ready(&socket) {
-        let log = read_daemon_log(&app);
-        let detail = if log.trim().is_empty() {
-            "No daemon output captured.".to_string()
-        } else {
-            let start = log.len().saturating_sub(800);
-            format!("Daemon log:\n{}", &log[start..])
-        };
-        return Err(format!("Tailscale daemon failed to start.\n{detail}"));
+        if !daemon_can_respond(&app, 75).await { // up to 15 s
+            let log = read_daemon_log(&app);
+            let detail = if log.trim().is_empty() {
+                "No daemon output captured.".to_string()
+            } else {
+                let start = log.len().saturating_sub(800);
+                format!("Daemon log:\n{}", &log[start..])
+            };
+            return Err(format!("Tailscale daemon failed to start.\n{detail}"));
+        }
     }
 
     let out = tokio::time::timeout(

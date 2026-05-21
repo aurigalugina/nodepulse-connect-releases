@@ -139,7 +139,8 @@
         })
       ).catch(() => { /* non-fatal */ });
     } catch (e) {
-      connectionStore.setError(e.message || 'Connection failed.');
+      const msg = typeof e === 'string' ? e : (e?.message || String(e) || 'Connection failed.');
+      connectionStore.setError(msg);
     } finally {
       submitting = false;
     }

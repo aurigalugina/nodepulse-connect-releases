@@ -17,7 +17,11 @@
     try {
       const { check } = await import(/* @vite-ignore */ '@tauri-apps/plugin-updater');
       const result = await check();
-      if (result?.available) {
+      // Guard: strip 'v' prefix before comparing — mismatch between manifest "v0.x.y"
+      // and binary "0.x.y" would cause check() to always return available.
+      const norm = (v) => v?.replace(/^v/, '') ?? '';
+      const isRealUpdate = result?.available && norm(result.version) !== norm(result.currentVersion);
+      if (isRealUpdate) {
         status = 'update-available';
         updateInfo = result;
       } else {

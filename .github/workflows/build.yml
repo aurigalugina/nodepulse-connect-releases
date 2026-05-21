@@ -152,11 +152,10 @@ jobs:
       - name: Extract version
         id: ver
         run: |
-          if [ -n "${{ github.event.inputs.version }}" ]; then
-            VERSION="${{ github.event.inputs.version }}"
-          else
-            VERSION="${GITHUB_REF#refs/tags/v}"
-          fi
+          # Always read from tauri.conf.json — this is the canonical version baked into the binary.
+          # workflow_dispatch version input and tag names are ignored to prevent latest.json
+          # from reporting a version that doesn't match the installed binary (causes update loops).
+          VERSION=$(node -p "require('./src-tauri/tauri.conf.json').version")
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "Publishing version: $VERSION"
 

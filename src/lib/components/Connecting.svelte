@@ -1,5 +1,6 @@
 <script>
   import { connectionStore } from '$lib/stores/connectionStore.svelte.js';
+  import { authStore } from '$lib/stores/authStore.svelte.js';
   import { CheckCircle2, Circle, XCircle } from 'lucide-svelte';
 
   const steps = $derived(connectionStore.steps);
@@ -73,11 +74,27 @@
     {/if}
   </div>
 
-  <!-- Error -->
+  <!-- Error + actions -->
   {#if error}
-    <div class="rounded-lg p-3 text-xs text-np-red leading-relaxed"
-         style="background: var(--color-np-red-dim); border: 1px solid color-mix(in srgb, var(--color-np-red) 20%, transparent);">
-      {error}
+    <div class="flex flex-col gap-2">
+      <div class="rounded-lg p-3 text-xs text-np-red leading-relaxed"
+           style="background: var(--color-np-red-dim); border: 1px solid color-mix(in srgb, var(--color-np-red) 20%, transparent);">
+        {error}
+      </div>
+      <div class="flex gap-2">
+        <button
+          onclick={() => { authStore.clearAuth(); connectionStore.transition('IDLE'); }}
+          class="np-btn-ghost flex-1 text-xs"
+        >
+          Sign out
+        </button>
+        <button
+          onclick={() => connectionStore.transition('CLUSTER_SELECT')}
+          class="np-btn-primary flex-1 text-xs"
+        >
+          Try again
+        </button>
+      </div>
     </div>
   {/if}
 </div>

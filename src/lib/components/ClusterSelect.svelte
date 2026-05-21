@@ -139,8 +139,7 @@
         })
       ).catch(() => { /* non-fatal */ });
     } catch (e) {
-      error = e.message || 'Connection failed.';
-      connectionStore.transition('CLUSTER_SELECT');
+      connectionStore.setError(e.message || 'Connection failed.');
     } finally {
       submitting = false;
     }

@@ -89,6 +89,27 @@ pub fn socket_path(app: &tauri::AppHandle) -> String {
     data_dir(app).join("tailscaled.sock").to_str().unwrap().to_string()
 }
 
+// ── Socket readiness poll ──────────────────────────────────────────────────────
+
+/// Block until the daemon socket/pipe is ready, or 5 s elapsed.
+fn wait_for_socket(socket: &str) {
+    for _ in 0..25 {
+        if socket_is_ready(socket) { return; }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn socket_is_ready(socket: &str) -> bool {
+    // Named pipe — try to open it
+    std::fs::File::open(socket).is_ok()
+}
+
+#[cfg(not(target_os = "windows"))]
+fn socket_is_ready(socket: &str) -> bool {
+    std::path::Path::new(socket).exists()
+}
+
 // ── Ready check ────────────────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -202,7 +223,8 @@ pub fn start_daemon(app: &tauri::AppHandle) {
         .spawn()
     {
         Ok(child) => {
-            std::thread::sleep(std::time::Duration::from_millis(500));
+            // Poll until daemon socket is ready — Windows named pipes take longer than Unix sockets.
+            wait_for_socket(&socket);
             if let Ok(mut g) = app.state::<DaemonHandle>().child.lock() {
                 *g = Some(child);
             }

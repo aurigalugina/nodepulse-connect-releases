@@ -206,11 +206,21 @@ fn read_daemon_log(app: &tauri::AppHandle) -> String {
 // ── Daemon lifecycle ───────────────────────────────────────────────────────────
 
 /// Spawn tailscaled with isolated socket + userspace networking.
-/// Non-fatal — silently skips if binary not yet available.
+/// Non-fatal — silently skips if binary not yet available or daemon already running.
 pub fn start_daemon(app: &tauri::AppHandle) {
     let bin = tailscaled_bin(app);
     if !bin.exists() {
         return;
+    }
+
+    // Don't spawn a second daemon if one is still alive.
+    if let Ok(mut g) = app.state::<DaemonHandle>().child.lock() {
+        if let Some(c) = g.as_mut() {
+            match c.try_wait() {
+                Ok(None) => return, // process still running
+                _ => { *g = None; } // exited or error — fall through to respawn
+            }
+        }
     }
 
     let state_dir = data_dir(app);
@@ -324,19 +334,42 @@ pub async fn tailscale_up(
     let socket = socket_path(&app);
 
     // Ensure daemon is alive before calling the CLI.
+    // tailscaled on Windows can take 10-20 s to bind the named pipe — wait async.
     if !socket_is_ready(&socket) {
-        start_daemon(&app);
-        if !socket_is_ready(&socket) {
-            let log = read_daemon_log(&app);
-            let detail = if log.trim().is_empty() {
-                "No daemon output captured.".to_string()
-            } else {
-                // Show the tail of the log — errors appear at the end.
-                let start = log.len().saturating_sub(800);
-                format!("Daemon log:\n{}", &log[start..])
-            };
-            return Err(format!("Tailscale daemon failed to start.\n{detail}"));
+        // Phase 1: daemon is probably still starting — wait up to 15 s.
+        for _ in 0..75 {
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            if socket_is_ready(&socket) { break; }
         }
+    }
+
+    if !socket_is_ready(&socket) {
+        // Phase 2: child might have died — restart if so, then wait 10 s more.
+        let is_dead = app.state::<DaemonHandle>().child.lock()
+            .ok()
+            .map(|mut g| g.as_mut()
+                .map(|c| c.try_wait().ok().flatten().is_some())
+                .unwrap_or(true))
+            .unwrap_or(true);
+
+        if is_dead {
+            start_daemon(&app);
+            for _ in 0..50 {
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                if socket_is_ready(&socket) { break; }
+            }
+        }
+    }
+
+    if !socket_is_ready(&socket) {
+        let log = read_daemon_log(&app);
+        let detail = if log.trim().is_empty() {
+            "No daemon output captured.".to_string()
+        } else {
+            let start = log.len().saturating_sub(800);
+            format!("Daemon log:\n{}", &log[start..])
+        };
+        return Err(format!("Tailscale daemon failed to start.\n{detail}"));
     }
 
     let out = tokio::time::timeout(

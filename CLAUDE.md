@@ -6,81 +6,45 @@ Desktop app untuk personal devices (engineer Ussi / staff BPR) agar bisa join me
 ## Stack
 - Tauri v2 + SvelteKit + Tailwind v4
 - `@tauri-apps/api` v2, `@tauri-apps/plugin-fs`, `@tauri-apps/plugin-store`
-- `@tauri-apps/plugin-updater` v2 — auto-update via MinIO manifest
+- `@tauri-apps/plugin-updater` v2 — auto-update via GitHub Releases manifest
 - `@tauri-apps/plugin-process` v2 — `relaunch()` after update install
-- Tailscale **bundled sebagai sidecar** (`src-tauri/binaries/`) — user tidak perlu install Tailscale. App spawn daemon-nya sendiri (`tailscaled --tun=userspace-networking --socket=<isolated>`) saat startup dan kill saat exit. System Tailscale tidak tahu koneksi ini sama sekali.
+- Tailscale **bundled (Win/macOS) atau didownload (Linux)** — user tidak perlu install Tailscale. App spawn daemon-nya sendiri (`tailscaled --tun=userspace-networking --socket=<isolated>`) saat startup dan kill saat exit. System Tailscale tidak tahu koneksi ini.
 
 ## Distribution & Auto-Update
 
 ### Build Pipeline
-Cross-platform builds via **GitHub Actions** (`.github/workflows/build-connect.yml`).
-Trigger: push tag `connect/v*` (e.g. `connect/v0.2.0`) atau `workflow_dispatch`.
+Cross-platform builds via **GitHub Actions** (`.github/workflows/build.yml`).
+Trigger: push tag `v*` (e.g. `v0.3.7`) atau `workflow_dispatch`.
 
-Matrix builds (satu native runner per platform):
+Matrix builds:
 | Platform | Runner | Bundle |
 |---|---|---|
-| Windows x64 | windows-latest | `.msi` |
-| macOS Intel | macos-13 | `.dmg` |
+| Windows x64 | windows-latest | `.exe` (NSIS) |
 | macOS Apple Silicon | macos-latest | `.dmg` |
 | Linux x64 | ubuntu-22.04 | `.AppImage` |
 
-Setelah semua build selesai, `publish` job mengumpulkan artifacts, upload ke MinIO, dan generate `latest.json`.
+Setelah build selesai, `publish` job assembles `latest.json` dan creates GitHub Release di repo `nodepulse-connect-releases`.
 
-### MinIO Structure
-```
-nodepulse/connect/
-  latest.json                          ← update manifest (public read)
-  releases/v{version}/
-    windows/NodePulse Connect_*.msi
-    windows/NodePulse Connect_*.msi.sig
-    macos/NodePulse Connect_*.dmg
-    macos/NodePulse Connect_*.dmg.sig
-    linux/NodePulse Connect_*.AppImage
-    linux/NodePulse Connect_*.AppImage.sig
-```
-
-### Signing Key Setup (WAJIB — satu kali sebelum first release)
-```bash
-# Generate keypair
-npx @tauri-apps/cli signer generate
-
-# Output:
-# Public key  → tambah ke src-tauri/tauri.conf.json → plugins.updater.pubkey
-# Private key → tambah sebagai GitHub secret TAURI_SIGNING_PRIVATE_KEY
-```
-**Jangan hilangkan private key** — tidak bisa di-recover. Simpan di password manager.
+### Update Manifest Endpoint
+`https://github.com/aurigalugina/nodepulse-connect-releases/releases/latest/download/latest.json`
 
 ### GitHub Actions Secrets Required
 | Secret | Value |
 |---|---|
-| `TAURI_SIGNING_PRIVATE_KEY` | Private key dari `signer generate` |
+| `TAURI_SIGNING_PRIVATE_KEY` | Private key dari `npx @tauri-apps/cli signer generate` |
 | `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | Password keypair (kosong = `""`) |
-| `MINIO_ENDPOINT` | e.g. `http://103.93.162.151:19000` |
-| `MINIO_ACCESS_KEY` | MinIO access key |
-| `MINIO_SECRET_KEY` | MinIO secret key |
-| `MINIO_PUBLIC_URL` | e.g. `http://minio.ussireschndev.net` |
 
-### Auto-Update Flow (client side)
-`UpdateNotice.svelte` di-mount di `App.svelte` dengan delay 3 detik:
-1. `check()` dari plugin-updater → fetch `latest.json` dari MinIO
-2. Jika ada versi baru → tampilkan banner dengan versi + notes
-3. User klik "Update Now" → `downloadAndInstall()` dengan progress bar 0-100%
-4. Setelah `Finished` event → `relaunch()` dari plugin-process
+### Tailscale Binary Delivery per Platform
+| Platform | Metode | Sumber |
+|---|---|---|
+| Linux | Runtime download oleh app (first launch) | `pkgs.tailscale.com/stable/tailscale_1.66.4_amd64.tgz` |
+| Windows | CI bundle via `externalBin`, di-copy dari NSIS installer | `tailscale-setup-full-1.66.4.exe` → Program Files\Tailscale |
+| macOS | CI bundle via `externalBin`, di-copy dari Homebrew | `brew install tailscale` → `/opt/homebrew/bin/` |
 
-### First Release Steps
-1. Generate signing keypair (sekali saja): `make gen-signing-key`
-2. Tambah public key ke `src-tauri/tauri.conf.json → plugins.updater.pubkey`
-3. Tambah semua GitHub secrets di atas
-4. Push tag: `git tag connect/v0.1.0 && git push --tags`
-5. GitHub Actions build + publish otomatis (~15 menit)
-6. Cek hasil di web panel: `/settings/connect`
+Build Win/macOS menggunakan override config: `npm run tauri build -- -c src-tauri/tauri-sidecar-extra.json`
+`tauri-sidecar-extra.json` menambahkan `bundle.externalBin` ke config base tanpa mengubah `tauri.conf.json`.
 
-### Manual Publish (fallback)
-Jika tidak pakai GitHub Actions, gunakan:
-```bash
-VERSION=0.2.0 MINIO_PUBLIC_URL=http://minio.ussireschndev.net make publish-minio
-```
-Pastikan `mc` terinstall dan alias `minio` sudah dikonfigurasi.
+Alasan split: `pkgs.tailscale.com` hanya punya tarball untuk Linux. Windows dan macOS tidak tersedia sebagai standalone binary di URL publik — harus ekstrak dari installer/brew.
 
 ## Window
 - Size: 360×520 (compact, non-resizable)
@@ -91,29 +55,42 @@ Pastikan `mc` terinstall dan alias `minio` sudah dikonfigurasi.
 IDLE → AUTHENTICATING → CLUSTER_SELECT → GENERATING_KEY → TAILSCALE_UP → CONNECTED
 ```
 
+## Startup Flow (v0.3.6+)
+```
+App open → StartupCheck (cek update) → TailscaleSetup? (Linux first-run only) → Login form
+```
+1. `StartupCheck.svelte` tampil dulu — check update via plugin-updater
+2. Jika update tersedia: tampilkan versi + tombol "Update Now" (download+relaunch) dan "Later"
+3. Jika up-to-date / offline: lanjut otomatis setelah 1-1.5 detik
+4. Setelah `startupDone = true`, cek `tailscale_is_ready`
+5. Jika binary belum ada (Linux first-run): `TailscaleSetup.svelte` download binary
+6. Jika binary sudah ada: langsung ke login/reconnect
+
 ## Role-Aware Flow
-Dua jenis user (dari JWT `role` field):
-- **admin / operator**: tampilkan ClusterSelect → user pilih cluster → join `<cluster-slug>` namespace di Headscale
+- **admin / operator**: ClusterSelect → pilih cluster → join `<cluster-slug>` namespace
 - **client** (BPR staff): skip cluster picker → auto-join `<cluster-slug>-connect` namespace berdasarkan `cluster_id` dari JWT
 
 ## Key Files
 
 | File | Fungsi |
 |---|---|
-| `src/App.svelte` | Root — state machine routing + authStore.load on mount + UpdateNotice overlay |
+| `src/App.svelte` | Root — startup gate + state machine routing + UpdateNotice overlay |
 | `src/lib/stores/authStore.svelte.js` | Config persist (url, username, token, role, cluster_id, device_name) |
 | `src/lib/stores/connectionStore.svelte.js` | State machine, tailscale status polling, tray sync |
 | `src/lib/api/nodepulse.js` | NodePulse REST client: login, getClusters, getNetworkConfig, generateNetworkKey, registerDevice, changePassword |
+| `src/lib/components/StartupCheck.svelte` | **v0.3.6+** — Startup gate: cek update → up-to-date/download banner → onDone() |
 | `src/lib/components/Setup.svelte` | Login form — handle must_change_password (inline form), save role + cluster_id |
-| `src/lib/components/TailscaleSetup.svelte` | First-run download screen — progress bar, retry on error |
-| `src/lib/components/ClusterSelect.svelte` | Cluster picker for admin/operator; auto-join for client role |
-| `src/lib/components/Connecting.svelte` | Progress steps display (GENERATING_KEY + TAILSCALE_UP states) |
+| `src/lib/components/TailscaleSetup.svelte` | Linux first-run: download+extract Tailscale, progress bar, retry on error |
+| `src/lib/components/ClusterSelect.svelte` | Cluster picker (admin/operator); auto-join (client role) |
+| `src/lib/components/Connecting.svelte` | Progress steps + error display dengan "Try again" / "Sign out" buttons |
 | `src/lib/components/Connected.svelte` | Connected state — mesh IP, node list, disconnect button |
-| `src/lib/components/UpdateNotice.svelte` | Auto-update banner: check latest.json → download with progress → relaunch |
+| `src/lib/components/UpdateNotice.svelte` | Background update banner (setelah startup, saat app running) |
 | `src-tauri/tauri.conf.json` | App config: window size, updater endpoint + pubkey, bundle targets |
-| `src-tauri/src/lib.rs` | Tauri plugins registered: updater + process |
-| `src/app.css` | Design tokens via Tailwind v4 `@theme`: np-bg, np-surface, np-indigo, np-green, etc. |
-| `.github/workflows/build-connect.yml` | Cross-platform build + MinIO publish pipeline |
+| `src-tauri/tauri-sidecar-extra.json` | Extra config (Win/macOS builds): tambah `bundle.externalBin` |
+| `src-tauri/src/lib.rs` | Tauri plugins + DaemonHandle + start_daemon di setup |
+| `src-tauri/src/commands/tailscale.rs` | Seluruh logika daemon + CLI commands |
+| `src/app.css` | Design tokens via Tailwind v4 `@theme` |
+| `.github/workflows/build.yml` | CI: bundle Tailscale binaries (Win/macOS), build, publish GitHub Release |
 
 ## Design Tokens (app.css)
 ```
@@ -141,47 +118,80 @@ Utility classes: `.np-input`, `.np-btn-primary`, `.np-btn-ghost`, `.np-btn-dange
 - Login: `POST /api/v1/auth/login/token` — Bearer token (bukan cookie)
 - Response: `{ token, expires_at, role, cluster_id, must_change_password }`
 - `cluster_id` non-empty hanya untuk role `client`
-- `must_change_password: true` → `Setup.svelte` tampilkan form ganti password sebelum lanjut ke CLUSTER_SELECT; JWT di-hold di `pendingToken` sampai berhasil
-- Change password: `POST /api/v1/auth/change-password` via `changePassword()` di `nodepulse.js`
+- `must_change_password: true` → Setup.svelte tampilkan form ganti password inline
+- Change password: `POST /api/v1/auth/change-password`
 
 ## Tauri Commands Used
-- `read_config` / `write_config` / `clear_auth_token` — config persistence
-- `tailscale_is_ready` — cek apakah binary sudah ada di app data dir (bool)
-- `ensure_tailscale` — download + extract Tailscale ke app data dir; emit `tailscale-setup` events
-- `tailscale_up` / `tailscale_down` / `tailscale_status` — mesh join/leave/status (semua via isolated socket)
-- `set_tray_connected` — tray icon state
-- `get_device_identity` — returns `{ machine_id, mac_address }` cross-platform; fail-safe; fire-and-forget setelah CONNECTED
+| Command | Tipe | Fungsi |
+|---|---|---|
+| `read_config` / `write_config` / `clear_auth_token` | sync | Config persistence |
+| `tailscale_is_ready` | sync | Cek binary ada di path yang benar (bool) |
+| `ensure_tailscale` | async | Linux: download+extract jika belum ada. Win/macOS: verifikasi bundle |
+| `tailscale_up` | async | Join mesh — cek daemon alive dulu, return error+log jika daemon fail |
+| `tailscale_down` | async | Logout dari mesh |
+| `tailscale_status` | async | Status + mesh IP via `tailscale status --json` |
+| `get_daemon_log` | sync | Baca `<statedir>/tailscaled.log` untuk diagnostics |
+| `set_tray_connected` | async | Update tray icon state |
+| `get_device_identity` | async | Return `{ machine_id, mac_address }` — fire-and-forget setelah CONNECTED |
 
-## Isolated Tailscale Daemon (v0.3.0)
+## Isolated Tailscale Daemon (v0.3.0+, revised v0.3.3+)
 
-`tailscaled` dan `tailscale` **didownload otomatis saat pertama kali launch** ke `<AppData>/tailscale-bin/`. App spawn daemon saat startup (noop jika belum download), kill saat exit.
+Tailscale berjalan sebagai daemon terpisah dari system Tailscale:
 
 ```
 tailscaled --tun=userspace-networking --socket=<isolated> --statedir=<AppData>/tailscale-state
 tailscale   --socket=<isolated> up/status/logout ...
 ```
 
-**Binary path:**
-- Windows: `%APPDATA%\id.ussi.nodepulse-connect\tailscale-bin\tailscaled.exe`
-- macOS: `~/Library/Application Support/id.ussi.nodepulse-connect/tailscale-bin/tailscaled`
-- Linux: `~/.local/share/id.ussi.nodepulse-connect/tailscale-bin/tailscaled`
+### Binary Paths
 
-**Socket path:**
-- Windows: `\\.\pipe\NodePulseConnect\tailscaled`
-- macOS/Linux: `<AppData>/tailscale-state/tailscaled.sock`
+| Platform | Path binary |
+|---|---|
+| Windows | Next to main exe: `C:\Program Files\NodePulse Connect\tailscaled.exe` |
+| macOS | Next to main exe: `/Applications/NodePulse Connect.app/Contents/MacOS/tailscaled` |
+| Linux | `~/.local/share/id.ussi.nodepulse-connect/tailscale-bin/tailscaled` |
 
-**First-run flow:**
-1. `App.svelte` call `tailscale_is_ready` → false → tampilkan `TailscaleSetup.svelte`
-2. `TailscaleSetup` call `ensure_tailscale` → download ~25MB tarball/zip dari `pkgs.tailscale.com`
-3. Extract ke `<AppData>/tailscale-bin/`, set executable bit, clear macOS quarantine
-4. `start_daemon()` dipanggil dari `ensure_tailscale` → daemon running
-5. `onReady()` callback → App.svelte tampilkan login form normal
+### Socket Paths
+| Platform | Socket |
+|---|---|
+| Windows | `\\.\pipe\NodePulseConnect\tailscaled` (named pipe) |
+| macOS/Linux | `<AppData>/tailscale-state/tailscaled.sock` |
 
-**Local dev setup:** langsung `npm run tauri dev` — app akan download binary saat pertama kali jalan.
+### Daemon Lifecycle
+1. App startup → `start_daemon()` di `lib.rs` setup (noop jika binary belum ada)
+2. `start_daemon` log output ke `<statedir>/tailscaled.log`
+3. Setelah spawn, `wait_for_socket()` poll 25× @ 200ms (max 5 detik) sampai socket ready
+4. `tailscale_up` cek `socket_is_ready` sebelum jalan — jika tidak ready, coba restart daemon
+5. Jika masih tidak ready, return error + tail dari `tailscaled.log`
+6. App exit → `DaemonHandle::kill()` membersihkan proses
 
-**CI:** `build.yml` tidak perlu download binary — tidak ada sidecar, binary didownload oleh app.
+### Error UX (v0.3.4+)
+- Jika koneksi gagal: **tetap di Connecting screen** (tidak balik ke ClusterSelect)
+- Error ditampilkan lengkap dengan scrollable log
+- Tombol "Try again" → kembali ke ClusterSelect, retry dari awal
+- Tombol "Sign out" → kembali ke IDLE
+
+### Linux First-Run Flow
+1. `tailscale_is_ready` → false → tampilkan `TailscaleSetup.svelte`
+2. `ensure_tailscale` → download `tailscale_1.66.4_amd64.tgz` dari pkgs.tailscale.com (~25MB)
+3. Extract ke `<AppData>/tailscale-bin/`, chmod 755
+4. `start_daemon()` dipanggil → daemon running
+5. `onReady()` callback → App.svelte lanjut ke login
+
+### Cargo Dependencies (Linux-only conditional)
+```toml
+[target.'cfg(target_os = "linux")'.dependencies]
+reqwest = { version = "0.12", features = ["rustls-tls"], default-features = false }
+flate2 = "1"
+tar = "0.4"
+```
+
+## Known Issues / Under Investigation
+- **Windows daemon startup** (v0.3.7, aktif): tailscaled.exe di Windows belum bisa binding ke named pipe. Log menunjukkan "failed to create local log directory" (non-fatal warning) — root cause belum diketahui. Logging ke `tailscaled.log` ditambahkan di v0.3.5 untuk diagnosis.
 
 ## DO NOT
 - Jangan pakai httpOnly cookie — desktop app pakai Bearer token
 - Jangan tambah page routing (tidak ada SvelteKit pages, semua satu halaman)
 - Jangan hardcode Headscale URL — selalu ambil dari `/api/v1/network/config`
+- Jangan remove `tauri-sidecar-extra.json` — diperlukan untuk Win/macOS CI builds
+- Jangan tambah `externalBin` ke `tauri.conf.json` base — Linux tidak butuh dan akan gagal build

@@ -1,6 +1,25 @@
 mod commands;
 mod tray;
 
+/// Tell Windows shell to flush icon cache so desktop/taskbar shortcuts show current icon.
+/// Uses shell32's SHChangeNotify — no extra crate needed.
+#[cfg(target_os = "windows")]
+fn refresh_icon_cache() {
+    #[link(name = "shell32")]
+    extern "system" {
+        fn SHChangeNotify(
+            wEventId: i32,
+            uFlags: u32,
+            dwItem1: *const std::ffi::c_void,
+            dwItem2: *const std::ffi::c_void,
+        );
+    }
+    unsafe {
+        // SHCNE_ASSOCCHANGED (0x08000000) + SHCNF_IDLIST (0) — flushes all icon lookups
+        SHChangeNotify(0x0800_0000i32, 0, std::ptr::null(), std::ptr::null());
+    }
+}
+
 use tauri::Manager;
 
 use commands::{
@@ -20,6 +39,9 @@ pub fn run() {
         .manage(DaemonHandle::new())
         .setup(|app| {
             setup_tray(&app.handle())?;
+            // Refresh Windows icon cache so desktop/taskbar shortcuts show the current icon.
+            #[cfg(target_os = "windows")]
+            refresh_icon_cache();
             // Start tailscaled if already downloaded; noop on first launch (binary absent).
             commands::tailscale::start_daemon(&app.handle());
             Ok(())

@@ -37,7 +37,7 @@
     <Connected />
   {/if}
 
-  {#if tailscaleReady && !updateDismissed}
+  {#if !updateDismissed}
     <UpdateNotice onDismiss={() => (updateDismissed = true)} />
   {/if}
 </div>

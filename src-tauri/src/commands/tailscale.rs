@@ -83,7 +83,7 @@ pub fn data_dir(app: &tauri::AppHandle) -> PathBuf {
 
 pub fn socket_path(app: &tauri::AppHandle) -> String {
     #[cfg(target_os = "windows")]
-    return r"\\.\pipe\NodePulseConnect\tailscaled".to_string();
+    return r"\\.\pipe\NodePulseConnect-tailscaled".to_string();
 
     #[cfg(not(target_os = "windows"))]
     data_dir(app).join("tailscaled.sock").to_str().unwrap().to_string()

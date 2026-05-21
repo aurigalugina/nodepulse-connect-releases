@@ -8,9 +8,11 @@
   import Connected from '$lib/components/Connected.svelte';
   import UpdateNotice from '$lib/components/UpdateNotice.svelte';
   import TailscaleSetup from '$lib/components/TailscaleSetup.svelte';
+  import StartupCheck from '$lib/components/StartupCheck.svelte';
 
   const state = $derived(connectionStore.state);
 
+  let startupDone    = $state(false);
   let updateDismissed = $state(false);
   let tailscaleReady = $state(true); // optimistic — set to false if binary absent
 
@@ -25,7 +27,9 @@
 </script>
 
 <div class="h-screen bg-np-bg text-np-text flex flex-col overflow-hidden">
-  {#if !tailscaleReady}
+  {#if !startupDone}
+    <StartupCheck onDone={() => (startupDone = true)} />
+  {:else if !tailscaleReady}
     <TailscaleSetup onReady={() => (tailscaleReady = true)} />
   {:else if state === 'IDLE' || state === 'AUTHENTICATING'}
     <Setup />
@@ -37,7 +41,7 @@
     <Connected />
   {/if}
 
-  {#if !updateDismissed}
+  {#if startupDone && !updateDismissed}
     <UpdateNotice onDismiss={() => (updateDismissed = true)} />
   {/if}
 </div>

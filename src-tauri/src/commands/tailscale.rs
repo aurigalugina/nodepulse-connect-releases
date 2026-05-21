@@ -331,7 +331,9 @@ pub async fn tailscale_up(
             let detail = if log.trim().is_empty() {
                 "No daemon output captured.".to_string()
             } else {
-                format!("Daemon log:\n{}", &log[..log.len().min(600)])
+                // Show the tail of the log — errors appear at the end.
+                let start = log.len().saturating_sub(800);
+                format!("Daemon log:\n{}", &log[start..])
             };
             return Err(format!("Tailscale daemon failed to start.\n{detail}"));
         }

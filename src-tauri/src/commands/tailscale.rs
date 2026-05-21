@@ -134,7 +134,7 @@ async fn ensure_impl(app: tauri::AppHandle) -> Result<(), String> {
         return Ok(());
     }
 
-    const VER: &str = "1.66.4";
+    const VER: &str = "1.98.2";
     let dir = bin_dir(&app);
     std::fs::create_dir_all(&dir).map_err(|e| format!("create bin dir: {e}"))?;
 

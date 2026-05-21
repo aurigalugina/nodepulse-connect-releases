@@ -75,7 +75,7 @@ jobs:
         if: matrix.platform == 'windows-latest'
         shell: pwsh
         run: |
-          $Ver = "1.66.4"
+          $Ver = "1.98.2"
           Invoke-WebRequest "https://pkgs.tailscale.com/stable/tailscale-setup-full-$Ver.exe" -OutFile ts-full.exe -UseBasicParsing
           Start-Process ".\ts-full.exe" -ArgumentList "/S" -Wait
           $tsDir = "${env:ProgramFiles}\Tailscale"

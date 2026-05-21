@@ -1,12 +1,19 @@
 <script>
   import { connectionStore } from '$lib/stores/connectionStore.svelte.js';
   import { authStore } from '$lib/stores/authStore.svelte.js';
-  import { CheckCircle2, Circle, XCircle } from 'lucide-svelte';
+  import { CheckCircle2, Circle, XCircle, Copy, Check } from 'lucide-svelte';
 
   const steps = $derived(connectionStore.steps);
   const state = $derived(connectionStore.state);
   const error = $derived(connectionStore.error);
   const activeStep = $derived(steps.length > 0 ? steps.length - 1 : 0);
+
+  let copied = $state(false);
+  async function copyLog() {
+    await navigator.clipboard.writeText(error ?? '');
+    copied = true;
+    setTimeout(() => (copied = false), 2000);
+  }
 </script>
 
 <div class="flex flex-col h-full px-6 py-7 gap-6">
@@ -77,9 +84,23 @@
   <!-- Error + actions -->
   {#if error}
     <div class="flex flex-col gap-2">
-      <div class="rounded-lg p-3 text-xs text-np-red leading-relaxed overflow-y-auto max-h-28 whitespace-pre-wrap break-words"
-           style="background: var(--color-np-red-dim); border: 1px solid color-mix(in srgb, var(--color-np-red) 20%, transparent);">
-        {error}
+      <div class="relative">
+        <div class="rounded-lg p-3 pr-8 text-xs text-np-red leading-relaxed overflow-y-auto max-h-28 whitespace-pre-wrap break-words"
+             style="background: var(--color-np-red-dim); border: 1px solid color-mix(in srgb, var(--color-np-red) 20%, transparent);">
+          {error}
+        </div>
+        <button
+          onclick={copyLog}
+          title="Copy log"
+          class="absolute top-2 right-2 p-1 rounded opacity-60 hover:opacity-100 transition-opacity"
+          style="color: var(--color-np-red);"
+        >
+          {#if copied}
+            <Check size={12} />
+          {:else}
+            <Copy size={12} />
+          {/if}
+        </button>
       </div>
       <div class="flex gap-2">
         <button

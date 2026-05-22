@@ -291,6 +291,14 @@ pub fn stop_daemon(app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+// Start the daemon — called from frontend AFTER the startup update check
+// completes, so tailscaled.exe is never running when an update installs.
+#[tauri::command]
+pub fn launch_daemon(app: tauri::AppHandle) -> Result<(), String> {
+    start_daemon(&app);
+    Ok(())
+}
+
 // ── CLI helper ─────────────────────────────────────────────────────────────────
 
 async fn run_ts(app: &tauri::AppHandle, args: &[&str]) -> Result<std::process::Output, String> {

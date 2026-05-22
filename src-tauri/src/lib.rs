@@ -25,7 +25,7 @@ use tauri::Manager;
 use commands::{
     identity::get_device_identity,
     storage::{clear_auth_token, read_config, write_config},
-    tailscale::{ensure_tailscale, get_daemon_log, stop_daemon, tailscale_down, tailscale_is_ready, tailscale_status, tailscale_up, DaemonHandle},
+    tailscale::{ensure_tailscale, get_daemon_log, launch_daemon, stop_daemon, tailscale_down, tailscale_is_ready, tailscale_status, tailscale_up, DaemonHandle},
 };
 use tray::{set_tray_connected, setup_tray};
 
@@ -42,8 +42,9 @@ pub fn run() {
             // Refresh Windows icon cache so desktop/taskbar shortcuts show the current icon.
             #[cfg(target_os = "windows")]
             refresh_icon_cache();
-            // Start tailscaled if already downloaded; noop on first launch (binary absent).
-            commands::tailscale::start_daemon(&app.handle());
+            // NOTE: start_daemon is NOT called here — it is called from the frontend
+            // after the startup update check completes (via launch_daemon command).
+            // This ensures tailscaled.exe is never running when an update installs.
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -55,6 +56,7 @@ pub fn run() {
             tailscale_down,
             get_daemon_log,
             stop_daemon,
+            launch_daemon,
             // Storage
             read_config,
             write_config,

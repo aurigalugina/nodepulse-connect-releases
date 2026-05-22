@@ -17,6 +17,12 @@
   let tailscaleReady = $state(true); // optimistic — set to false if binary absent
 
   $effect(() => {
+    // Wait until the startup update check completes before starting the daemon.
+    // Keeping tailscaled.exe stopped during the update gate means the NSIS
+    // installer can always overwrite it — no file-lock update loop.
+    if (!startupDone) return;
+
+    invoke('launch_daemon');
     invoke('tailscale_is_ready').then((ready) => {
       tailscaleReady = ready;
     });

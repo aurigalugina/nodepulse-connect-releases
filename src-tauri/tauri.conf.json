@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "NodePulse Connect",
-  "version": "0.3.19",
+  "version": "0.3.20",
   "identifier": "id.ussi.nodepulse-connect",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -39,7 +39,12 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "windows": {
+      "nsis": {
+        "preInstallSection": "nsis/kill-existing.nsi"
+      }
+    }
   },
   "plugins": {
     "updater": {

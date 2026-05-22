@@ -21,6 +21,7 @@ let _deviceName = $state(null);
 let _steps = $state([]);
 
 let _pollInterval = null;
+let _pollWasEverOnline = false;
 
 export const connectionStore = {
   get state() { return _state; },
@@ -43,7 +44,7 @@ export const connectionStore = {
         // Cluster info will be re-fetched by Connected.svelte
         _cluster = { id: last_cluster_id, name: '...' };
         _state = 'CONNECTED';
-        startPolling();
+        startPolling(10_000); // reconnect: node should already be online, short grace
         await invoke('set_tray_connected', { connected: true });
       }
     } catch {
@@ -102,19 +103,44 @@ export const connectionStore = {
   },
 };
 
-function startPolling() {
+// graceMs: how long after polling starts to wait before treating offline as a disconnect.
+// After a fresh tailscale_up, the DERP relay + WireGuard key exchange can take 30-60s
+// on Windows userspace networking. Without a grace period, the first poll (5s) fires
+// before the mesh is established and falsely disconnects the session.
+function startPolling(graceMs = 45_000) {
   if (_pollInterval) return;
+
+  _pollWasEverOnline = false;
+  const graceEnd = Date.now() + graceMs;
+  let consecutiveOffline = 0;
+
   _pollInterval = setInterval(async () => {
     try {
       const status = await invoke('tailscale_status');
-      if (!status.online && _state === 'CONNECTED') {
-        stopPolling();
-        _state = 'IDLE';
-        _meshIp = null;
-        _error = 'Mesh connection lost. Please reconnect.';
-        await invoke('set_tray_connected', { connected: false });
-      } else if (status.online) {
+      if (status.online) {
+        consecutiveOffline = 0;
+        _pollWasEverOnline = true;
         _meshIp = status.mesh_ip;
+      } else if (_state === 'CONNECTED') {
+        if (_pollWasEverOnline) {
+          // Was connected — require 3 consecutive offline readings before declaring lost
+          consecutiveOffline++;
+          if (consecutiveOffline >= 3) {
+            stopPolling();
+            _state = 'IDLE';
+            _meshIp = null;
+            _error = 'Mesh connection lost. Please reconnect.';
+            await invoke('set_tray_connected', { connected: false });
+          }
+        } else if (Date.now() > graceEnd) {
+          // Never came online within grace window — give up
+          stopPolling();
+          _state = 'IDLE';
+          _meshIp = null;
+          _error = 'Mesh connection timed out. The DERP relay may be unreachable.';
+          await invoke('set_tray_connected', { connected: false });
+        }
+        // else: still within grace period — keep waiting, don't disconnect
       }
     } catch {
       // Ignore transient errors during polling

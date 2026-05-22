@@ -82,10 +82,9 @@ pub fn data_dir(app: &tauri::AppHandle) -> PathBuf {
 }
 
 pub fn socket_path(app: &tauri::AppHandle) -> String {
-    #[cfg(target_os = "windows")]
-    return r"\\.\pipe\NodePulseConnect-tailscaled".to_string();
-
-    #[cfg(not(target_os = "windows"))]
+    // Use a plain file path on all platforms — avoids Windows named-pipe security descriptor
+    // errors (ERROR_INVALID_OWNER) that occur with \\.\pipe\ paths on restricted user tokens.
+    // Tailscale 1.98+ uses AF_UNIX (Windows 10 1803+) when the path is not a named pipe.
     data_dir(app).join("tailscaled.sock").to_str().unwrap().to_string()
 }
 
@@ -99,16 +98,6 @@ fn wait_for_socket(socket: &str) {
     }
 }
 
-#[cfg(target_os = "windows")]
-fn socket_is_ready(socket: &str) -> bool {
-    match std::fs::File::open(socket) {
-        Ok(_) => true,
-        // ERROR_PIPE_BUSY (231): pipe exists but no free instance right now — daemon IS running
-        Err(e) => e.raw_os_error() == Some(231),
-    }
-}
-
-#[cfg(not(target_os = "windows"))]
 fn socket_is_ready(socket: &str) -> bool {
     std::path::Path::new(socket).exists()
 }
@@ -230,7 +219,6 @@ pub fn start_daemon(app: &tauri::AppHandle) {
     let _ = std::fs::create_dir_all(&state_dir);
     let socket = socket_path(app);
 
-    #[cfg(not(target_os = "windows"))]
     {
         let sock = PathBuf::from(&socket);
         if sock.exists() { let _ = std::fs::remove_file(&sock); }

@@ -407,6 +407,16 @@ pub async fn tailscale_up(
         }
     }
 
+    // Clear any stale profile/auth state from previous failed attempts.
+    // If the daemon has a corrupt or incomplete profile (e.g. profile prefs exist
+    // but the profile data directory was never created), `tailscale up` will
+    // hit blockEngineUpdates and never reach Running state. Logging out first
+    // ensures a clean identity for the new auth key.
+    let _ = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        run_ts(&app, &["logout"]),
+    ).await;
+
     let out = tokio::time::timeout(
         std::time::Duration::from_secs(60),
         tokio::process::Command::new(tailscale_bin(&app))

@@ -286,8 +286,9 @@ pub fn get_daemon_log(app: tauri::AppHandle) -> String {
 // Kill the daemon process — called before update install so the NSIS extractor
 // can overwrite tailscaled.exe (which it holds a file lock on while running).
 #[tauri::command]
-pub fn stop_daemon(app: tauri::AppHandle) {
+pub fn stop_daemon(app: tauri::AppHandle) -> Result<(), String> {
     app.state::<DaemonHandle>().kill();
+    Ok(())
 }
 
 // ── CLI helper ─────────────────────────────────────────────────────────────────

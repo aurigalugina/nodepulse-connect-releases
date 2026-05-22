@@ -70,20 +70,24 @@ jobs:
       - name: Install npm dependencies
         run: npm ci
 
-      # Windows: install Tailscale silently, copy binaries into src-tauri/binaries/
+      # Windows: build Tailscale from source with SDDL patch.
+      # Root cause of ERROR_INVALID_OWNER: Tailscale's windowsSDDL = "O:BAG:BAD:PAI..."
+      # sets Owner=BUILTIN\Administrators on the named pipe, which requires admin rights.
+      # Fix: remove "O:BA" and "G:BA" — without an explicit owner, Windows assigns the
+      # current process user automatically (always valid, no admin needed).
       - name: Bundle Tailscale binaries (Windows)
         if: matrix.platform == 'windows-latest'
         shell: pwsh
         run: |
-          $Ver = "1.98.2"
-          Invoke-WebRequest "https://pkgs.tailscale.com/stable/tailscale-setup-full-$Ver.exe" -OutFile ts-full.exe -UseBasicParsing
-          Start-Process ".\ts-full.exe" -ArgumentList "/S" -Wait
-          $tsDir = "${env:ProgramFiles}\Tailscale"
-          if (-not (Test-Path $tsDir)) { $tsDir = "${env:ProgramW6432}\Tailscale" }
+          git clone --depth 1 --branch v1.98.2 https://github.com/tailscale/tailscale tailscale-src
+          $file = "tailscale-src\safesocket\pipe_windows.go"
+          (Get-Content $file -Raw) -replace '"O:BAG:BAD:PAI', '"D:PAI' | Set-Content $file
           New-Item -ItemType Directory -Force -Path src-tauri\binaries | Out-Null
-          Copy-Item "$tsDir\tailscale.exe"  "src-tauri\binaries\tailscale-x86_64-pc-windows-msvc.exe"
-          Copy-Item "$tsDir\tailscaled.exe" "src-tauri\binaries\tailscaled-x86_64-pc-windows-msvc.exe"
-          Remove-Item ts-full.exe -Force
+          Push-Location tailscale-src
+          go build -o "..\src-tauri\binaries\tailscaled-x86_64-pc-windows-msvc.exe" .\cmd\tailscaled
+          go build -o "..\src-tauri\binaries\tailscale-x86_64-pc-windows-msvc.exe" .\cmd\tailscale
+          Pop-Location
+          Remove-Item tailscale-src -Recurse -Force
 
       # macOS: install Tailscale via Homebrew, copy binaries into src-tauri/binaries/
       - name: Bundle Tailscale binaries (macOS)

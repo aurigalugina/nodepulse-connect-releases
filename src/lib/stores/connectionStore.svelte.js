@@ -127,17 +127,19 @@ function startPolling(graceMs = 45_000) {
           consecutiveOffline++;
           if (consecutiveOffline >= 3) {
             stopPolling();
-            _state = 'IDLE';
             _meshIp = null;
+            _steps = [];
             _error = 'Mesh connection lost. Please reconnect.';
+            _state = 'TAILSCALE_UP'; // show Connecting.svelte with error + Try again button
             await invoke('set_tray_connected', { connected: false });
           }
         } else if (Date.now() > graceEnd) {
           // Never came online within grace window — give up
           stopPolling();
-          _state = 'IDLE';
           _meshIp = null;
-          _error = 'Mesh connection timed out. The DERP relay may be unreachable.';
+          _steps = [];
+          _error = 'Mesh connection timed out. Try again, or check if the DERP relay is reachable.';
+          _state = 'TAILSCALE_UP'; // show Connecting.svelte with error + Try again button
           await invoke('set_tray_connected', { connected: false });
         }
         // else: still within grace period — keep waiting, don't disconnect

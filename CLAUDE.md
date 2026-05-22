@@ -37,8 +37,8 @@ Setelah build selesai, `publish` job assembles `latest.json` dan creates GitHub 
 ### Tailscale Binary Delivery per Platform
 | Platform | Metode | Sumber |
 |---|---|---|
-| Linux | Runtime download oleh app (first launch) | `pkgs.tailscale.com/stable/tailscale_1.66.4_amd64.tgz` |
-| Windows | CI bundle via `externalBin`, di-copy dari NSIS installer | `tailscale-setup-full-1.66.4.exe` → Program Files\Tailscale |
+| Linux | Runtime download oleh app (first launch) | `pkgs.tailscale.com/stable/tailscale_1.98.2_amd64.tgz` |
+| Windows | CI bundle via `externalBin`, di-copy dari NSIS installer | `tailscale-setup-full-1.98.2.exe` → Program Files\Tailscale |
 | macOS | CI bundle via `externalBin`, di-copy dari Homebrew | `brew install tailscale` → `/opt/homebrew/bin/` |
 
 Build Win/macOS menggunakan override config: `npm run tauri build -- -c src-tauri/tauri-sidecar-extra.json`
@@ -154,8 +154,12 @@ tailscale   --socket=<isolated> up/status/logout ...
 ### Socket Paths
 | Platform | Socket |
 |---|---|
-| Windows | `\\.\pipe\NodePulseConnect\tailscaled` (named pipe) |
-| macOS/Linux | `<AppData>/tailscale-state/tailscaled.sock` |
+| Windows | `<AppData>\id.ussi.nodepulse-connect\tailscale-state\tailscaled.sock` (AF_UNIX — not named pipe) |
+| macOS/Linux | `<AppData>/id.ussi.nodepulse-connect/tailscale-state/tailscaled.sock` |
+
+> **Why not named pipe on Windows**: `\\.\pipe\...` paths cause `ERROR_INVALID_OWNER` (1307) in
+> Tailscale's `safesocket.Listen` — it sets an explicit owner SID that restricted user tokens
+> cannot claim. AF_UNIX file sockets (Windows 10 1803+) avoid this entirely.
 
 ### Daemon Lifecycle
 1. App startup → `start_daemon()` di `lib.rs` setup (noop jika binary belum ada)
@@ -173,7 +177,7 @@ tailscale   --socket=<isolated> up/status/logout ...
 
 ### Linux First-Run Flow
 1. `tailscale_is_ready` → false → tampilkan `TailscaleSetup.svelte`
-2. `ensure_tailscale` → download `tailscale_1.66.4_amd64.tgz` dari pkgs.tailscale.com (~25MB)
+2. `ensure_tailscale` → download `tailscale_1.98.2_amd64.tgz` dari pkgs.tailscale.com (~25MB)
 3. Extract ke `<AppData>/tailscale-bin/`, chmod 755
 4. `start_daemon()` dipanggil → daemon running
 5. `onReady()` callback → App.svelte lanjut ke login
@@ -187,7 +191,7 @@ tar = "0.4"
 ```
 
 ## Known Issues / Under Investigation
-- **Windows joining mesh slow** (v0.3.9): daemon sudah berhasil start dan bind named pipe, tapi "Joining mesh network..." phase memakan waktu lama. Ini inherent ke Windows userspace networking init. Max wait sekarang ~87s (15+10 iter × 3.5s) lalu `tailscale up` 60s timeout.
+- **Windows joining mesh slow**: Inherent ke Windows userspace networking init. Max wait ~87s (15+10 iter × 3.5s) sebelum `tailscale up` 60s timeout. Biasanya selesai dalam 20-40 detik.
 
 ## DO NOT
 - Jangan pakai httpOnly cookie — desktop app pakai Bearer token

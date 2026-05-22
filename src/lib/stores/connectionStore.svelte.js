@@ -22,6 +22,7 @@ let _steps = $state([]);
 
 let _pollInterval = null;
 let _pollWasEverOnline = false;
+let _lastBackendState = 'unknown';
 
 export const connectionStore = {
   get state() { return _state; },
@@ -103,6 +104,17 @@ export const connectionStore = {
   },
 };
 
+async function getDaemonLogSnippet() {
+  try {
+    const log = await invoke('get_daemon_log');
+    if (!log?.trim()) return '';
+    const tail = log.slice(-900);
+    return '\n\nDaemon log:\n' + tail;
+  } catch {
+    return '';
+  }
+}
+
 // graceMs: how long after polling starts to wait before treating offline as a disconnect.
 // After a fresh tailscale_up, the DERP relay + WireGuard key exchange can take 30-60s
 // on Windows userspace networking. Without a grace period, the first poll (5s) fires
@@ -117,35 +129,35 @@ function startPolling(graceMs = 45_000) {
   _pollInterval = setInterval(async () => {
     try {
       const status = await invoke('tailscale_status');
+      _lastBackendState = status.backend_state ?? 'unknown';
       if (status.online) {
         consecutiveOffline = 0;
         _pollWasEverOnline = true;
         _meshIp = status.mesh_ip;
       } else if (_state === 'CONNECTED') {
         if (_pollWasEverOnline) {
-          // Was connected — require 3 consecutive offline readings before declaring lost
           consecutiveOffline++;
           if (consecutiveOffline >= 3) {
             stopPolling();
+            const log = await getDaemonLogSnippet();
             _meshIp = null;
             _steps = [];
-            _error = 'Mesh connection lost. Please reconnect.';
-            _state = 'TAILSCALE_UP'; // show Connecting.svelte with error + Try again button
+            _error = `Mesh connection lost (daemon: ${_lastBackendState}).${log}`;
+            _state = 'TAILSCALE_UP';
             await invoke('set_tray_connected', { connected: false });
           }
         } else if (Date.now() > graceEnd) {
-          // Never came online within grace window — give up
           stopPolling();
+          const log = await getDaemonLogSnippet();
           _meshIp = null;
           _steps = [];
-          _error = 'Mesh connection timed out. Try again, or check if the DERP relay is reachable.';
-          _state = 'TAILSCALE_UP'; // show Connecting.svelte with error + Try again button
+          _error = `Mesh connection timed out (daemon: ${_lastBackendState}). DERP relay may be unreachable.${log}`;
+          _state = 'TAILSCALE_UP';
           await invoke('set_tray_connected', { connected: false });
         }
-        // else: still within grace period — keep waiting, don't disconnect
       }
     } catch {
-      // Ignore transient errors during polling
+      _lastBackendState = 'status-error';
     }
   }, 5000);
 }

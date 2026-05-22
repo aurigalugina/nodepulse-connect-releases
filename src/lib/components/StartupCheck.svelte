@@ -40,7 +40,12 @@
     let downloaded = 0;
     let total = 0;
     try {
+      const { invoke } = await import(/* @vite-ignore */ '@tauri-apps/api/core');
       const { relaunch } = await import(/* @vite-ignore */ '@tauri-apps/plugin-process');
+      // Kill the bundled tailscaled before NSIS runs — otherwise the installer
+      // fails with "Error opening file for writing" because the running daemon
+      // holds a file lock on tailscaled.exe.
+      await invoke('stop_daemon').catch(() => {});
       await updateInfo.downloadAndInstall((event) => {
         if (event.event === 'Started') {
           total = event.data.contentLength ?? 0;

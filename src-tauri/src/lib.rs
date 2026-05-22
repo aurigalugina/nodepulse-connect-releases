@@ -54,6 +54,7 @@ pub fn run() {
             tailscale_up,
             tailscale_down,
             get_daemon_log,
+            stop_daemon,
             // Storage
             read_config,
             write_config,

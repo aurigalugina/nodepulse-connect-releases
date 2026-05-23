@@ -376,46 +376,31 @@ pub async fn tailscale_up(
 ) -> Result<String, String> {
     let socket = socket_path(&app);
 
-    // Wait for daemon to respond — use `tailscale status` as the real readiness test.
-    // Named pipe File::open is unreliable (can return PIPE_BUSY even when daemon is alive).
-    // Each iteration: 3s probe timeout + 0.5s sleep = ~3.5s max.
-    // 15 iterations ≈ 52s max before giving up.
-    let daemon_ready = daemon_can_respond(&app, 15).await;
-
-    if !daemon_ready {
-        // Process may have died — restart, then wait another round.
-        let child_dead = app.state::<DaemonHandle>().child.lock()
-            .ok()
-            .map(|mut g| g.as_mut()
-                .map(|c| c.try_wait().ok().flatten().is_some())
-                .unwrap_or(true))
-            .unwrap_or(true);
-
-        if child_dead {
-            start_daemon(&app);
-        }
-
-        if !daemon_can_respond(&app, 10).await { // ~35s more
-            let log = read_daemon_log(&app);
-            let detail = if log.trim().is_empty() {
-                "No daemon output captured.".to_string()
-            } else {
-                let start = log.len().saturating_sub(800);
-                format!("Daemon log:\n{}", &log[start..])
-            };
-            return Err(format!("Tailscale daemon failed to start.\n{detail}"));
-        }
+    // Wipe statedir and restart daemon before every connection attempt.
+    // Tailscale persists profile prefs (node key, username, profile ID) between
+    // sessions. On retry the daemon reloads stale prefs, the profile data directory
+    // is missing, and blockEngineUpdates fires — the new auth key is never used.
+    // A clean statedir guarantees a fresh login with no residual state.
+    app.state::<DaemonHandle>().kill();
+    let state_dir = data_dir(&app);
+    if state_dir.exists() {
+        let _ = std::fs::remove_dir_all(&state_dir);
     }
+    let _ = std::fs::create_dir_all(&state_dir);
+    start_daemon(&app);
 
-    // Clear any stale profile/auth state from previous failed attempts.
-    // If the daemon has a corrupt or incomplete profile (e.g. profile prefs exist
-    // but the profile data directory was never created), `tailscale up` will
-    // hit blockEngineUpdates and never reach Running state. Logging out first
-    // ensures a clean identity for the new auth key.
-    let _ = tokio::time::timeout(
-        std::time::Duration::from_secs(5),
-        run_ts(&app, &["logout"]),
-    ).await;
+    // Wait for the fresh daemon to respond.
+    // Each iteration: 3s probe timeout + 0.5s sleep ≈ 3.5s. 15 iters ≈ 52s max.
+    if !daemon_can_respond(&app, 15).await {
+        let log = read_daemon_log(&app);
+        let detail = if log.trim().is_empty() {
+            "No daemon output captured.".to_string()
+        } else {
+            let start = log.len().saturating_sub(800);
+            format!("Daemon log:\n{}", &log[start..])
+        };
+        return Err(format!("Tailscale daemon failed to start.\n{detail}"));
+    }
 
     let out = tokio::time::timeout(
         std::time::Duration::from_secs(60),
@@ -428,7 +413,6 @@ pub async fn tailscale_up(
                 "--hostname",      &hostname,
                 "--accept-dns=false",
                 "--reset",
-                "--force-reauth",
             ])
             .output(),
     )

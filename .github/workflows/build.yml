@@ -80,8 +80,26 @@ jobs:
         shell: pwsh
         run: |
           git clone --depth 1 --branch v1.98.2 https://github.com/tailscale/tailscale tailscale-src
+
+          # Patch 1: SDDL — remove O:BA owner so non-admin users can create named pipe
           $file = "tailscale-src\safesocket\pipe_windows.go"
           (Get-Content $file -Raw) -replace '"O:BAG:BAD:PAI', '"D:PAI' | Set-Content $file
+
+          # Patch 2: redirect ProgramData → LocalAppData so the audit-log store
+          # (and any other shared Tailscale paths) go to a user-writable location.
+          # Without this, tailscaled fails with "Access is denied" when
+          # C:\ProgramData\Tailscale\ exists from a system Tailscale install.
+          $pathsFile = "tailscale-src\paths\paths_windows.go"
+          if (Test-Path $pathsFile) {
+            $src = Get-Content $pathsFile -Raw
+            $src = $src -replace 'os\.Getenv\("PROGRAMDATA"\)', 'os.Getenv("LOCALAPPDATA")'
+            $src = $src -replace 'windows\.FOLDERID_ProgramData', 'windows.FOLDERID_LocalAppData'
+            Set-Content $pathsFile $src
+            Write-Host "Patched paths_windows.go: ProgramData -> LocalAppData"
+          } else {
+            Write-Warning "paths_windows.go not found — audit log path patch skipped"
+          }
+
           New-Item -ItemType Directory -Force -Path src-tauri\binaries | Out-Null
           Push-Location tailscale-src
           go build -o "..\src-tauri\binaries\tailscaled-x86_64-pc-windows-msvc.exe" .\cmd\tailscaled

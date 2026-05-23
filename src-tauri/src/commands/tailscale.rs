@@ -423,11 +423,12 @@ pub async fn tailscale_up(
             .args([
                 "--socket", &socket,
                 "up",
-                "--login-server", &login_server,
-                "--authkey",      &authkey,
-                "--hostname",     &hostname,
+                "--login-server",  &login_server,
+                "--authkey",       &authkey,
+                "--hostname",      &hostname,
                 "--accept-dns=false",
                 "--reset",
+                "--force-reauth",
             ])
             .output(),
     )

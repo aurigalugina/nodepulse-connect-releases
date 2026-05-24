@@ -116,10 +116,10 @@ async function getDaemonLogSnippet() {
 }
 
 // graceMs: how long after polling starts to wait before treating offline as a disconnect.
-// After a fresh tailscale_up, the DERP relay + WireGuard key exchange can take 30-60s
+// After a fresh tailscale_up, the DERP relay + WireGuard key exchange can take 30-90s
 // on Windows userspace networking. Without a grace period, the first poll (5s) fires
 // before the mesh is established and falsely disconnects the session.
-function startPolling(graceMs = 45_000) {
+function startPolling(graceMs = 90_000) {
   if (_pollInterval) return;
 
   _pollWasEverOnline = false;

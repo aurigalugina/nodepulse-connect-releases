@@ -85,20 +85,26 @@ jobs:
           $file = "tailscale-src\safesocket\pipe_windows.go"
           (Get-Content $file -Raw) -replace '"O:BAG:BAD:PAI', '"D:PAI' | Set-Content $file
 
-          # Patch 2: redirect ProgramData → LocalAppData so the audit-log store
-          # (and any other shared Tailscale paths) go to a user-writable location.
-          # Without this, tailscaled fails with "Access is denied" when
-          # C:\ProgramData\Tailscale\ exists from a system Tailscale install.
-          $pathsFile = "tailscale-src\paths\paths_windows.go"
-          if (Test-Path $pathsFile) {
-            $src = Get-Content $pathsFile -Raw
-            $src = $src -replace 'os\.Getenv\("PROGRAMDATA"\)', 'os.Getenv("LOCALAPPDATA")'
-            $src = $src -replace 'windows\.FOLDERID_ProgramData', 'windows.FOLDERID_LocalAppData'
-            Set-Content $pathsFile $src
-            Write-Host "Patched paths_windows.go: ProgramData -> LocalAppData"
-          } else {
-            Write-Warning "paths_windows.go not found — audit log path patch skipped"
+          # Patch 2: redirect ProgramData → LocalAppData across ALL Go source files.
+          # tailscaled v1.98.2 constructs the audit-log path in multiple files
+          # (paths_windows.go, cmd/tailscaled audit init, etc.) — patching only one
+          # file leaves other references intact and still hits C:\ProgramData\Tailscale\
+          # which is inaccessible to non-admin users when system Tailscale is installed.
+          $patched = 0
+          Get-ChildItem tailscale-src -Recurse -Filter "*.go" | ForEach-Object {
+            $src = Get-Content $_.FullName -Raw
+            if ($src -match 'PROGRAMDATA|FOLDERID_ProgramData') {
+              $new = $src `
+                -replace 'os\.Getenv\("PROGRAMDATA"\)', 'os.Getenv("LOCALAPPDATA")' `
+                -replace 'windows\.FOLDERID_ProgramData', 'windows.FOLDERID_LocalAppData'
+              if ($new -ne $src) {
+                Set-Content $_.FullName $new
+                Write-Host "Patched $($_.FullName): ProgramData -> LocalAppData"
+                $patched++
+              }
+            }
           }
+          Write-Host "Total files patched: $patched"
 
           New-Item -ItemType Directory -Force -Path src-tauri\binaries | Out-Null
           Push-Location tailscale-src

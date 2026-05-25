@@ -259,7 +259,6 @@ pub fn start_daemon(app: &tauri::AppHandle) {
             "--tun=userspace-networking",
             "--socket", &socket,
             "--statedir", state_dir.to_str().unwrap_or(""),
-            "--state", "mem:",
         ])
         .stdout(stdout_s)
         .stderr(stderr_s)
@@ -377,11 +376,18 @@ pub async fn tailscale_up(
 ) -> Result<String, String> {
     let socket = socket_path(&app);
 
-    // Wipe statedir and restart daemon before every connection attempt.
-    // Tailscale persists profile prefs (node key, username, profile ID) between
-    // sessions. On retry the daemon reloads stale prefs, the profile data directory
-    // is missing, and blockEngineUpdates fires — the new auth key is never used.
-    // A clean statedir guarantees a fresh login with no residual state.
+    // Full state reset before every connection attempt:
+    // 1. logout WHILE daemon is running — Tailscale's own cleanup removes the current
+    //    profile from the state store (Windows registry or file). Without this, killing
+    //    the daemon leaves a stale profile entry in the registry. On the next start,
+    //    the daemon reloads that profile but its data directory is gone (wiped below),
+    //    hitting "profile data directory: profile not found" → blockEngineUpdates.
+    // 2. Kill daemon + wipe statedir — removes file-based state and profile data dirs.
+    // 3. Fresh daemon + tailscale up — creates a clean profile with no prior residue.
+    let _ = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        run_ts(&app, &["logout"]),
+    ).await;
     app.state::<DaemonHandle>().kill();
     let state_dir = data_dir(&app);
     if state_dir.exists() {

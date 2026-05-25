@@ -259,6 +259,7 @@ pub fn start_daemon(app: &tauri::AppHandle) {
             "--tun=userspace-networking",
             "--socket", &socket,
             "--statedir", state_dir.to_str().unwrap_or(""),
+            "--state", "mem:",
         ])
         .stdout(stdout_s)
         .stderr(stderr_s)
@@ -376,37 +377,46 @@ pub async fn tailscale_up(
 ) -> Result<String, String> {
     let socket = socket_path(&app);
 
-    // Full state reset before every connection attempt:
-    // 1. logout WHILE daemon is running — Tailscale's own cleanup removes the current
-    //    profile from the state store (Windows registry or file). Without this, killing
-    //    the daemon leaves a stale profile entry in the registry. On the next start,
-    //    the daemon reloads that profile but its data directory is gone (wiped below),
-    //    hitting "profile data directory: profile not found" → blockEngineUpdates.
-    // 2. Kill daemon + wipe statedir — removes file-based state and profile data dirs.
-    // 3. Fresh daemon + tailscale up — creates a clean profile with no prior residue.
-    let _ = tokio::time::timeout(
-        std::time::Duration::from_secs(5),
-        run_ts(&app, &["logout"]),
-    ).await;
-    app.state::<DaemonHandle>().kill();
-    let state_dir = data_dir(&app);
-    if state_dir.exists() {
-        let _ = std::fs::remove_dir_all(&state_dir);
-    }
-    let _ = std::fs::create_dir_all(&state_dir);
-    start_daemon(&app);
-
-    // Wait for the fresh daemon to respond.
-    // Each iteration: 3s probe timeout + 0.5s sleep ≈ 3.5s. 15 iters ≈ 52s max.
-    if !daemon_can_respond(&app, 15).await {
-        let log = read_daemon_log(&app);
-        let detail = if log.trim().is_empty() {
-            "No daemon output captured.".to_string()
-        } else {
-            let start = log.len().saturating_sub(800);
-            format!("Daemon log:\n{}", &log[start..])
-        };
-        return Err(format!("Tailscale daemon failed to start.\n{detail}"));
+    // Reset strategy: keep the daemon alive if it's already running.
+    //
+    // Root cause of the persistent "profile data directory: profile not found" bug:
+    // tailscale up in v1.98.2 is async — the CLI sends prefs and exits immediately.
+    // When the CLI disconnects, daemon cleanup calls profileDirFor() before the new
+    // profile is committed to knownProfiles — a race window that only exists in a
+    // freshly-restarted daemon. A daemon that has been running since app launch is
+    // fully warm and doesn't hit this race.
+    //
+    // Strategy:
+    // - If daemon is alive: just logout (clears current profile + resets
+    //   blockEngineUpdates if a previous attempt hit it) then tailscale up.
+    // - If daemon is dead: full restart (kill + wipe + start). Accept the race
+    //   risk — this is the edge case (crash), not the normal retry path.
+    if daemon_can_respond(&app, 3).await {
+        // Daemon is alive — logout clears the profile and unblocks the engine.
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            run_ts(&app, &["logout"]),
+        ).await;
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    } else {
+        // Daemon is dead — full restart.
+        app.state::<DaemonHandle>().kill();
+        let state_dir = data_dir(&app);
+        if state_dir.exists() {
+            let _ = std::fs::remove_dir_all(&state_dir);
+        }
+        let _ = std::fs::create_dir_all(&state_dir);
+        start_daemon(&app);
+        if !daemon_can_respond(&app, 15).await {
+            let log = read_daemon_log(&app);
+            let detail = if log.trim().is_empty() {
+                "No daemon output captured.".to_string()
+            } else {
+                let start = log.len().saturating_sub(800);
+                format!("Daemon log:\n{}", &log[start..])
+            };
+            return Err(format!("Tailscale daemon failed to start.\n{detail}"));
+        }
     }
 
     let out = tokio::time::timeout(

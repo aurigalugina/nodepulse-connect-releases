@@ -428,10 +428,29 @@ pub async fn tailscale_up(
     }
 
     let _ = app.emit("connect-debug",
-        format!("[rust] tailscale up --login-server {} --hostname {}", login_server, hostname));
+        format!("[rust] tailscale up --login-server {} --hostname {} --timeout=60s", login_server, hostname));
+
+    // Background poller: emit BackendState every 5 s so the debug log stays live while we wait.
+    // --timeout=60s keeps the CLI's RPC connection open so its context isn't canceled mid-login.
+    let app_poll = app.clone();
+    let poll_handle = tokio::spawn(async move {
+        let mut secs = 0u32;
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            secs += 5;
+            let state = run_ts(&app_poll, &["status", "--json"]).await
+                .ok()
+                .and_then(|o| serde_json::from_slice::<serde_json::Value>(&o.stdout).ok())
+                .and_then(|v| v["BackendState"].as_str().map(str::to_string))
+                .unwrap_or_else(|| "unknown".to_string());
+            let _ = app_poll.emit("connect-debug",
+                format!("[rust] +{secs}s BackendState={state}"));
+            if state == "Running" { break; }
+        }
+    });
 
     let up_result = tokio::time::timeout(
-        std::time::Duration::from_secs(60),
+        std::time::Duration::from_secs(90),
         tokio::process::Command::new(tailscale_bin(&app))
             .args([
                 "--socket", &socket,
@@ -440,14 +459,17 @@ pub async fn tailscale_up(
                 "--authkey",       &authkey,
                 "--hostname",      &hostname,
                 "--accept-dns=false",
+                "--timeout=60s",
             ])
             .output(),
     ).await;
 
+    poll_handle.abort();
+
     let out = match up_result {
         Err(_) => {
-            let _ = app.emit("connect-debug", "[rust] tailscale up timed out after 60s");
-            return Err("Timed out after 60s — check Headscale server and DERP relay.".to_string());
+            let _ = app.emit("connect-debug", "[rust] tailscale up timed out after 90s");
+            return Err("Timed out after 90s — check Headscale server and DERP relay.".to_string());
         }
         Ok(Err(e)) => {
             let _ = app.emit("connect-debug", format!("[rust] tailscale up spawn error: {e}"));

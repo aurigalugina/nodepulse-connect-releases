@@ -259,6 +259,7 @@ pub fn start_daemon(app: &tauri::AppHandle) {
             "--tun=userspace-networking",
             "--socket", &socket,
             "--statedir", state_dir.to_str().unwrap_or(""),
+            "--state", "mem:",
         ])
         .stdout(stdout_s)
         .stderr(stderr_s)

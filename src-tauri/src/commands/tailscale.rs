@@ -377,60 +377,81 @@ pub async fn tailscale_up(
 ) -> Result<String, String> {
     let socket = socket_path(&app);
 
-    // Reset strategy: keep the daemon alive if it's already running.
+    // Prepare daemon for a fresh login:
     //
-    // Root cause of the persistent "profile data directory: profile not found" bug:
-    // tailscale up in v1.98.2 is async — the CLI sends prefs and exits immediately.
-    // When the CLI disconnects, daemon cleanup calls profileDirFor() before the new
-    // profile is committed to knownProfiles — a race window that only exists in a
-    // freshly-restarted daemon. A daemon that has been running since app launch is
-    // fully warm and doesn't hit this race.
+    // `tailscale logout` was found to trigger blockEngineUpdates(true) inside the
+    // daemon — after logout the daemon accepts IPC connections but silently ignores
+    // all commands (tailscale up returns exit=0 / empty output, state stays NoState).
     //
-    // Strategy:
-    // - If daemon is alive: just logout (clears current profile + resets
-    //   blockEngineUpdates if a previous attempt hit it) then tailscale up.
-    // - If daemon is dead: full restart (kill + wipe + start). Accept the race
-    //   risk — this is the edge case (crash), not the normal retry path.
+    // `tailscale down` is gentler: it stops the WireGuard interface without deleting
+    // the profile or running the profile-cleanup code that poisons the engine state.
+    // After down, daemon enters Stopped/NeedsLogin and can immediately accept tailscale up.
+    //
+    // If down leaves the daemon in NoState (same broken state as after logout), we fall
+    // through to a kill+restart to guarantee a clean slate.
     let _ = app.emit("connect-debug", "[rust] checking daemon (3 probes)…");
     if daemon_can_respond(&app, 3).await {
-        let _ = app.emit("connect-debug", "[rust] daemon alive → tailscale logout");
-        let logout_res = tokio::time::timeout(
+        let _ = app.emit("connect-debug", "[rust] daemon alive → tailscale down");
+        let down_res = tokio::time::timeout(
             std::time::Duration::from_secs(5),
-            run_ts(&app, &["logout"]),
+            run_ts(&app, &["down"]),
         ).await;
-        let _ = app.emit("connect-debug", match &logout_res {
-            Ok(Ok(o)) if o.status.success() => "[rust] logout OK".to_string(),
-            Ok(Ok(o)) => format!("[rust] logout exit={}", o.status),
-            Ok(Err(e)) => format!("[rust] logout err: {e}"),
-            Err(_) => "[rust] logout timed out".to_string(),
+        let _ = app.emit("connect-debug", match &down_res {
+            Ok(Ok(o)) if o.status.success() => "[rust] down OK".to_string(),
+            Ok(Ok(o)) => format!("[rust] down exit={}", o.status),
+            Ok(Err(e)) => format!("[rust] down err: {e}"),
+            Err(_) => "[rust] down timed out".to_string(),
         });
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+
+        // Verify daemon is in a usable state after down.
+        // If it ended up in NoState (engine blocked), kill and restart.
+        let post_down = run_ts(&app, &["status", "--json"]).await;
+        let post_state = post_down.ok()
+            .and_then(|o| serde_json::from_slice::<serde_json::Value>(&o.stdout).ok())
+            .and_then(|v| v["BackendState"].as_str().map(str::to_string))
+            .unwrap_or_else(|| "unknown".to_string());
+        let _ = app.emit("connect-debug", format!("[rust] daemon state after down: {post_state}"));
+
+        if post_state == "NoState" || post_state == "unknown" {
+            let _ = app.emit("connect-debug", "[rust] daemon broken after down → kill + wipe + restart");
+            app.state::<DaemonHandle>().kill();
+            let state_dir = data_dir(&app);
+            if state_dir.exists() { let _ = std::fs::remove_dir_all(&state_dir); }
+            let _ = std::fs::create_dir_all(&state_dir);
+            start_daemon(&app);
+            if !daemon_can_respond(&app, 15).await {
+                let _ = app.emit("connect-debug", "[rust] daemon failed to start after restart");
+                let log = read_daemon_log(&app);
+                let detail = if log.trim().is_empty() { "No daemon output captured.".to_string() }
+                    else { let s = log.len().saturating_sub(800); format!("Daemon log:\n{}", &log[s..]) };
+                return Err(format!("Tailscale daemon failed to start.\n{detail}"));
+            }
+            // Extra warmup: let profile manager fully initialize before tailscale up
+            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+            let _ = app.emit("connect-debug", "[rust] daemon ready after restart");
+        }
     } else {
         let _ = app.emit("connect-debug", "[rust] daemon dead → kill + wipe + restart");
         app.state::<DaemonHandle>().kill();
         let state_dir = data_dir(&app);
-        if state_dir.exists() {
-            let _ = std::fs::remove_dir_all(&state_dir);
-        }
+        if state_dir.exists() { let _ = std::fs::remove_dir_all(&state_dir); }
         let _ = std::fs::create_dir_all(&state_dir);
         start_daemon(&app);
         let _ = app.emit("connect-debug", "[rust] waiting for daemon to respond (15 probes)…");
         if !daemon_can_respond(&app, 15).await {
-            let log = read_daemon_log(&app);
-            let detail = if log.trim().is_empty() {
-                "No daemon output captured.".to_string()
-            } else {
-                let start = log.len().saturating_sub(800);
-                format!("Daemon log:\n{}", &log[start..])
-            };
             let _ = app.emit("connect-debug", "[rust] daemon failed to start");
+            let log = read_daemon_log(&app);
+            let detail = if log.trim().is_empty() { "No daemon output captured.".to_string() }
+                else { let s = log.len().saturating_sub(800); format!("Daemon log:\n{}", &log[s..]) };
             return Err(format!("Tailscale daemon failed to start.\n{detail}"));
         }
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
         let _ = app.emit("connect-debug", "[rust] daemon ready after restart");
     }
 
     let _ = app.emit("connect-debug",
-        format!("[rust] tailscale up --login-server {} --hostname {} --reset", login_server, hostname));
+        format!("[rust] tailscale up --login-server {} --hostname {}", login_server, hostname));
 
     let up_result = tokio::time::timeout(
         std::time::Duration::from_secs(60),
@@ -442,7 +463,6 @@ pub async fn tailscale_up(
                 "--authkey",       &authkey,
                 "--hostname",      &hostname,
                 "--accept-dns=false",
-                "--reset",
             ])
             .output(),
     ).await;

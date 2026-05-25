@@ -19,6 +19,8 @@ let _cluster = $state(null);
 let _deviceName = $state(null);
 /** @type {string[]} */
 let _steps = $state([]);
+/** @type {{ time: string, msg: string }[]} */
+let _debugLog = $state([]);
 
 let _pollInterval = null;
 let _pollWasEverOnline = false;
@@ -31,6 +33,7 @@ export const connectionStore = {
   get cluster() { return _cluster; },
   get deviceName() { return _deviceName; },
   get steps() { return _steps; },
+  get debugLog() { return _debugLog; },
 
   /** Called from App.svelte after authStore.load() to attempt auto-reconnect. */
   async tryAutoReconnect() {
@@ -70,8 +73,18 @@ export const connectionStore = {
     _steps = [..._steps, msg];
   },
 
+  addDebugLog(msg) {
+    const t = new Date();
+    const hh = String(t.getHours()).padStart(2, '0');
+    const mm = String(t.getMinutes()).padStart(2, '0');
+    const ss = String(t.getSeconds()).padStart(2, '0');
+    const ms = String(t.getMilliseconds()).padStart(3, '0');
+    _debugLog = [..._debugLog, { time: `${hh}:${mm}:${ss}.${ms}`, msg }];
+  },
+
   resetSteps() {
     _steps = [];
+    _debugLog = [];
   },
 
   setMeshIp(ip) {
@@ -177,6 +190,11 @@ if (typeof window !== 'undefined' && window.__TAURI_INTERNALS__) {
       await connectionStore.disconnect();
     }
   }).catch((e) => console.warn('tray-disconnect listen error:', e));
+
+  // Forward daemon debug events emitted from Rust into the debug log
+  listen('connect-debug', (event) => {
+    connectionStore.addDebugLog(String(event.payload));
+  }).catch(() => {});
 }
 
 // Export startPolling so Connected.svelte can call it after TAILSCALE_UP

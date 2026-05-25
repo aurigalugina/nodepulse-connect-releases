@@ -391,15 +391,22 @@ pub async fn tailscale_up(
     //   blockEngineUpdates if a previous attempt hit it) then tailscale up.
     // - If daemon is dead: full restart (kill + wipe + start). Accept the race
     //   risk — this is the edge case (crash), not the normal retry path.
+    let _ = app.emit("connect-debug", "[rust] checking daemon (3 probes)…");
     if daemon_can_respond(&app, 3).await {
-        // Daemon is alive — logout clears the profile and unblocks the engine.
-        let _ = tokio::time::timeout(
+        let _ = app.emit("connect-debug", "[rust] daemon alive → tailscale logout");
+        let logout_res = tokio::time::timeout(
             std::time::Duration::from_secs(5),
             run_ts(&app, &["logout"]),
         ).await;
+        let _ = app.emit("connect-debug", match &logout_res {
+            Ok(Ok(o)) if o.status.success() => "[rust] logout OK".to_string(),
+            Ok(Ok(o)) => format!("[rust] logout exit={}", o.status),
+            Ok(Err(e)) => format!("[rust] logout err: {e}"),
+            Err(_) => "[rust] logout timed out".to_string(),
+        });
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     } else {
-        // Daemon is dead — full restart.
+        let _ = app.emit("connect-debug", "[rust] daemon dead → kill + wipe + restart");
         app.state::<DaemonHandle>().kill();
         let state_dir = data_dir(&app);
         if state_dir.exists() {
@@ -407,6 +414,7 @@ pub async fn tailscale_up(
         }
         let _ = std::fs::create_dir_all(&state_dir);
         start_daemon(&app);
+        let _ = app.emit("connect-debug", "[rust] waiting for daemon to respond (15 probes)…");
         if !daemon_can_respond(&app, 15).await {
             let log = read_daemon_log(&app);
             let detail = if log.trim().is_empty() {
@@ -415,11 +423,16 @@ pub async fn tailscale_up(
                 let start = log.len().saturating_sub(800);
                 format!("Daemon log:\n{}", &log[start..])
             };
+            let _ = app.emit("connect-debug", "[rust] daemon failed to start");
             return Err(format!("Tailscale daemon failed to start.\n{detail}"));
         }
+        let _ = app.emit("connect-debug", "[rust] daemon ready after restart");
     }
 
-    let out = tokio::time::timeout(
+    let _ = app.emit("connect-debug",
+        format!("[rust] tailscale up --login-server {} --hostname {} --reset", login_server, hostname));
+
+    let up_result = tokio::time::timeout(
         std::time::Duration::from_secs(60),
         tokio::process::Command::new(tailscale_bin(&app))
             .args([
@@ -432,13 +445,27 @@ pub async fn tailscale_up(
                 "--reset",
             ])
             .output(),
-    )
-    .await
-    .map_err(|_| "Timed out after 60s — check Headscale server and DERP relay.".to_string())?
-    .map_err(|e| format!("tailscale up: {e}"))?;
+    ).await;
+
+    let out = match up_result {
+        Err(_) => {
+            let _ = app.emit("connect-debug", "[rust] tailscale up timed out after 60s");
+            return Err("Timed out after 60s — check Headscale server and DERP relay.".to_string());
+        }
+        Ok(Err(e)) => {
+            let _ = app.emit("connect-debug", format!("[rust] tailscale up spawn error: {e}"));
+            return Err(format!("tailscale up: {e}"));
+        }
+        Ok(Ok(o)) => o,
+    };
 
     let stdout = String::from_utf8_lossy(&out.stdout).to_string();
     let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+    let _ = app.emit("connect-debug",
+        format!("[rust] tailscale up exit={} stdout={:?} stderr={:?}",
+            out.status.code().unwrap_or(-1),
+            stdout.trim(), stderr.trim()));
+
     if !out.status.success() {
         return Err(if !stderr.is_empty() { stderr } else { stdout });
     }

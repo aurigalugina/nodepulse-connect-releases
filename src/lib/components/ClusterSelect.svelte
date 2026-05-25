@@ -96,27 +96,39 @@
     connectionStore.setCluster(cluster);
     connectionStore.setDeviceName(deviceName.trim() || authStore.config.device_name);
 
+    const dbg = (msg) => connectionStore.addDebugLog(msg);
+    const hn = deviceName.trim() || authStore.config.device_name;
+
     try {
+      dbg(`connect → cluster="${cluster.name}" user="${headscaleUser}" device="${hn}"`);
+
+      dbg(`GET /api/v1/network/config`);
       const netConfig = await getNetworkConfig(authStore.url, authStore.token);
       const headscaleUrl = netConfig?.headscale_url ?? netConfig?.data?.headscale_url;
       if (!headscaleUrl) throw new Error('Could not retrieve Headscale URL from NodePulse.');
+      dbg(`headscale_url = ${headscaleUrl}`);
       connectionStore.addStep('Network config retrieved');
 
+      dbg(`POST /api/v1/network/generate_key (user=${headscaleUser})`);
       const keyRes = await generateNetworkKey(authStore.url, authStore.token, headscaleUser);
       const preAuthKey = keyRes?.data?.pre_auth_key ?? keyRes?.pre_auth_key;
       if (!preAuthKey) throw new Error('Failed to generate pre-auth key.');
+      dbg(`pre_auth_key generated (${preAuthKey.slice(0, 8)}...)`);
       connectionStore.addStep('Pre-auth key generated');
 
       connectionStore.transition('TAILSCALE_UP');
       connectionStore.addStep('Joining mesh network…');
+      dbg(`invoke tailscale_up hostname="${hn}"`);
       await invoke('tailscale_up', {
         loginServer: headscaleUrl,
         authkey: preAuthKey,
-        hostname: deviceName.trim() || authStore.config.device_name,
+        hostname: hn,
       });
+      dbg(`tailscale_up returned OK`);
       connectionStore.addStep('Mesh connection established');
 
       const status = await invoke('tailscale_status');
+      dbg(`tailscale_status: state=${status.backend_state} online=${status.online} ip=${status.mesh_ip}`);
       connectionStore.setMeshIp(status.mesh_ip ?? null);
       connectionStore.addStep('IP address assigned');
 
@@ -140,6 +152,7 @@
       ).catch(() => { /* non-fatal */ });
     } catch (e) {
       const msg = typeof e === 'string' ? e : (e?.message || String(e) || 'Connection failed.');
+      dbg(`ERROR: ${msg}`);
       connectionStore.setError(msg);
     } finally {
       submitting = false;

@@ -285,6 +285,11 @@ pub fn start_daemon(app: &tauri::AppHandle) {
             "--statedir", state_dir.to_str().unwrap_or(""),
             "--state", &state_file_str,
         ])
+        // Skip WinHTTP proxy detection: it blocks for several seconds before timing out,
+        // delaying doLogin long enough for the CLI to disconnect first, which then triggers
+        // the profileDirFor cleanup. NO_PROXY=* makes Tailscale skip WinHTTP entirely.
+        .env("NO_PROXY", "*")
+        .env("no_proxy", "*")
         .stdout(stdout_s)
         .stderr(stderr_s)
         .spawn()
@@ -416,12 +421,21 @@ pub async fn tailscale_up(
     // manager needs a few more milliseconds to fully initialize. We poll BackendState
     // until it transitions out of NoState before calling tailscale up — this ensures
     // the profile creation in tailscale up lands on a fully-ready profile manager.
-    let _ = app.emit("connect-debug", "[rust] killing daemon to clear blockEngineUpdates…");
+    // Kill the daemon to restart it with a clean process, but DO NOT wipe the statedir.
+    //
+    // Why: Tailscale creates a profile data directory (<statedir>/profiles/<id>/) during
+    // doLogin setup. When the `tailscale up` CLI exits, the IPN server cleanup calls
+    // profileDirFor() to clean up per-client state. If the profile data dir doesn't exist
+    // (because we wiped statedir), profileDirFor returns "profile not found" and the cleanup
+    // path calls blockEngineUpdates(true) — permanently blocking the engine.
+    //
+    // By keeping the statedir, the profile data dir from the previous (or current) doLogin
+    // attempt persists, so profileDirFor() finds it and cleanup completes without error.
+    // The state file (WantRunning=false, stale key) is overridden by `tailscale up --authkey=xxx`.
+    let _ = app.emit("connect-debug", "[rust] killing daemon…");
     app.state::<DaemonHandle>().kill();
-    // Brief pause for Windows to clean up the named pipe before new daemon creates it.
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     let state_dir = data_dir(&app);
-    if state_dir.exists() { let _ = std::fs::remove_dir_all(&state_dir); }
     let _ = std::fs::create_dir_all(&state_dir);
     let _ = app.emit("connect-debug", "[rust] starting fresh daemon…");
     start_daemon(&app);

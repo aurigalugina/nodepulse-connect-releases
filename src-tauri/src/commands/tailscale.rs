@@ -450,45 +450,62 @@ pub async fn tailscale_up(
     }
 
     // Poll until BackendState exits NoState — signals profile manager fully initialized.
-    // Typically 200–800ms after IPC becomes reachable.
-    for i in 0..10u8 {
+    // With a pre-existing statedir the daemon can take longer to start (up to ~10s).
+    for i in 0..20u8 {
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         let probe = run_ts(&app, &["status", "--json"]).await;
         let backend_state = probe.ok()
             .and_then(|o| serde_json::from_slice::<serde_json::Value>(&o.stdout).ok())
             .and_then(|v| v["BackendState"].as_str().map(str::to_string))
             .unwrap_or_else(|| "unknown".to_string());
-        let _ = app.emit("connect-debug", format!("[rust] init poll {}/{}: BackendState={backend_state}", i + 1, 10));
+        let _ = app.emit("connect-debug", format!("[rust] init poll {}/{}: BackendState={backend_state}", i + 1, 20));
         if backend_state != "NoState" && backend_state != "unknown" {
             let _ = app.emit("connect-debug", "[rust] profile manager ready");
             break;
         }
     }
 
-    // DO NOT use --timeout=60s: it keeps the CLI's IPC connection (WatchIPNBus) alive for
-    // up to 60s, and when the CLI finally exits, the IPN server cleanup sets WantRunning=false —
-    // killing the doLogin mid-flight (observed: exit=0 at ~10s → instant NoState/WantRunning=false).
-    // Instead: send prefs and let the CLI exit immediately (~1-2s); then we poll status ourselves.
+    // --operator=<username> enables serverMode=true in the Tailscale daemon.
+    //
+    // Root cause of every prior failure: serverMode=false (the default when tailscaled is
+    // not a Windows service). In serverMode=false, when the LAST IPC client (e.g. the
+    // `tailscale up` CLI) disconnects, the IPN server explicitly sets wantRunning=false
+    // and shuts down the connection — every time, unconditionally, regardless of the
+    // pre-auth key or whether doLogin completed. profileDirFor, blockEngineUpdates, and
+    // the rapid retry cycles are all downstream symptoms of this forced shutdown.
+    //
+    // With --operator=<username>, Tailscale stores OperatorUser in prefs, which triggers
+    // setServerMode(true). In serverMode=true, the daemon persists after all IPC clients
+    // disconnect — doLogin runs to completion, auth succeeds, and the connection stays up.
+    //
+    // NO_PROXY=* (set on daemon env) skips the WinHTTP proxy detection that was stalling
+    // doLogin for 5-8s, making auth reach Headscale immediately.
+    let operator = std::env::var("USERNAME")
+        .or_else(|_| std::env::var("USER"))
+        .unwrap_or_else(|_| "nodepulse".to_string());
+
     let _ = app.emit("connect-debug",
-        format!("[rust] tailscale up --login-server {} --hostname {}", login_server, hostname));
+        format!("[rust] tailscale up --login-server {} --hostname {} --operator={}", login_server, hostname, operator));
 
     let up_result = tokio::time::timeout(
         std::time::Duration::from_secs(15),
         tokio::process::Command::new(tailscale_bin(&app))
             .args([
-                "--socket", &socket,
+                "--socket",       &socket,
                 "up",
-                "--login-server",  &login_server,
-                "--authkey",       &authkey,
-                "--hostname",      &hostname,
+                "--login-server", &login_server,
+                "--authkey",      &authkey,
+                "--hostname",     &hostname,
+                "--operator",     &operator,
             ])
             .output(),
     ).await;
 
     let out = match up_result {
         Err(_) => {
-            let _ = app.emit("connect-debug", "[rust] tailscale up timed out after 15s (prefs send hang)");
-            return Err("tailscale up failed to send prefs (15s timeout).".to_string());
+            let _ = app.emit("connect-debug", "[rust] tailscale up timed out after 15s");
+            let log = read_daemon_log(&app);
+            return Err(format!("tailscale up prefs send timed out.\nDaemon log:\n{}", log_snippet(&log)));
         }
         Ok(Err(e)) => {
             let _ = app.emit("connect-debug", format!("[rust] tailscale up spawn error: {e}"));
@@ -529,7 +546,8 @@ pub async fn tailscale_up(
             return Ok("Connected".to_string());
         }
         // If the daemon explicitly stopped (WantRunning=false), bail early — no point waiting.
-        if state == "Stopped" || state == "NoState" && i > 3 {
+        // Give 15s grace before treating NoState as terminal (daemon may still be initializing).
+        if state == "Stopped" || (state == "NoState" && i > 5) {
             let log = read_daemon_log(&app);
             let snip = log_snippet(&log);
             let _ = app.emit("connect-debug", format!("[rust] daemon stopped early: {snip}"));

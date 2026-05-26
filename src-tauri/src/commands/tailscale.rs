@@ -206,6 +206,20 @@ fn read_daemon_log(app: &tauri::AppHandle) -> String {
     std::fs::read_to_string(&path).unwrap_or_default()
 }
 
+/// Return up to the first 1 KB + last 2 KB of the daemon log so we see both
+/// startup context and the most recent entries.
+fn log_snippet(log: &str) -> String {
+    const HEAD: usize = 1024;
+    const TAIL: usize = 2048;
+    if log.len() <= HEAD + TAIL {
+        return log.to_string();
+    }
+    let head = &log[..HEAD];
+    let tail_start = log.len().saturating_sub(TAIL);
+    let tail = &log[tail_start..];
+    format!("{head}\n…[truncated]…\n{tail}")
+}
+
 // ── Daemon lifecycle ───────────────────────────────────────────────────────────
 
 /// Spawn tailscaled with isolated socket + userspace networking.
@@ -417,7 +431,7 @@ pub async fn tailscale_up(
         let _ = app.emit("connect-debug", "[rust] daemon failed to start");
         let log = read_daemon_log(&app);
         let detail = if log.trim().is_empty() { "No daemon output captured.".to_string() }
-            else { let s = log.len().saturating_sub(800); format!("Daemon log:\n{}", &log[s..]) };
+            else { format!("Daemon log:\n{}", log_snippet(&log)) };
         return Err(format!("Tailscale daemon failed to start.\n{detail}"));
     }
 
@@ -437,30 +451,15 @@ pub async fn tailscale_up(
         }
     }
 
+    // DO NOT use --timeout=60s: it keeps the CLI's IPC connection (WatchIPNBus) alive for
+    // up to 60s, and when the CLI finally exits, the IPN server cleanup sets WantRunning=false —
+    // killing the doLogin mid-flight (observed: exit=0 at ~10s → instant NoState/WantRunning=false).
+    // Instead: send prefs and let the CLI exit immediately (~1-2s); then we poll status ourselves.
     let _ = app.emit("connect-debug",
-        format!("[rust] tailscale up --login-server {} --hostname {} --timeout=60s", login_server, hostname));
-
-    // Background poller: emit BackendState every 5 s so the debug log stays live while we wait.
-    // --timeout=60s keeps the CLI's RPC connection open so its context isn't canceled mid-login.
-    let app_poll = app.clone();
-    let poll_handle = tokio::spawn(async move {
-        let mut secs = 0u32;
-        loop {
-            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-            secs += 5;
-            let state = run_ts(&app_poll, &["status", "--json"]).await
-                .ok()
-                .and_then(|o| serde_json::from_slice::<serde_json::Value>(&o.stdout).ok())
-                .and_then(|v| v["BackendState"].as_str().map(str::to_string))
-                .unwrap_or_else(|| "unknown".to_string());
-            let _ = app_poll.emit("connect-debug",
-                format!("[rust] +{secs}s BackendState={state}"));
-            if state == "Running" { break; }
-        }
-    });
+        format!("[rust] tailscale up --login-server {} --hostname {}", login_server, hostname));
 
     let up_result = tokio::time::timeout(
-        std::time::Duration::from_secs(90),
+        std::time::Duration::from_secs(15),
         tokio::process::Command::new(tailscale_bin(&app))
             .args([
                 "--socket", &socket,
@@ -468,18 +467,14 @@ pub async fn tailscale_up(
                 "--login-server",  &login_server,
                 "--authkey",       &authkey,
                 "--hostname",      &hostname,
-                "--accept-dns=false",
-                "--timeout=60s",
             ])
             .output(),
     ).await;
 
-    poll_handle.abort();
-
     let out = match up_result {
         Err(_) => {
-            let _ = app.emit("connect-debug", "[rust] tailscale up timed out after 90s");
-            return Err("Timed out after 90s — check Headscale server and DERP relay.".to_string());
+            let _ = app.emit("connect-debug", "[rust] tailscale up timed out after 15s (prefs send hang)");
+            return Err("tailscale up failed to send prefs (15s timeout).".to_string());
         }
         Ok(Err(e)) => {
             let _ = app.emit("connect-debug", format!("[rust] tailscale up spawn error: {e}"));
@@ -496,9 +491,45 @@ pub async fn tailscale_up(
             stdout.trim(), stderr.trim()));
 
     if !out.status.success() {
-        return Err(if !stderr.is_empty() { stderr } else { stdout });
+        let msg = if !stderr.is_empty() { stderr } else { stdout };
+        return Err(msg);
     }
-    Ok(if !stdout.is_empty() { stdout } else { "Connected".to_string() })
+
+    // tailscale up sent prefs — now poll until the daemon reaches Running state.
+    // The daemon handles doLogin independently; we wait up to 75s for it to connect.
+    let _ = app.emit("connect-debug", "[rust] prefs sent — polling for Running state (75s)…");
+    for i in 1u32..=25 {
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+        let probe = run_ts(&app, &["status", "--json"]).await;
+        let (state, online) = probe.ok()
+            .and_then(|o| serde_json::from_slice::<serde_json::Value>(&o.stdout).ok())
+            .map(|v| (
+                v["BackendState"].as_str().unwrap_or("unknown").to_string(),
+                v["Self"]["Online"].as_bool().unwrap_or(false),
+            ))
+            .unwrap_or_else(|| ("unknown".to_string(), false));
+        let _ = app.emit("connect-debug",
+            format!("[rust] +{}s BackendState={state} online={online}", i * 3));
+        if state == "Running" && online {
+            let _ = app.emit("connect-debug", "[rust] connected!");
+            return Ok("Connected".to_string());
+        }
+        // If the daemon explicitly stopped (WantRunning=false), bail early — no point waiting.
+        if state == "Stopped" || state == "NoState" && i > 3 {
+            let log = read_daemon_log(&app);
+            let snip = log_snippet(&log);
+            let _ = app.emit("connect-debug", format!("[rust] daemon stopped early: {snip}"));
+            return Err(format!(
+                "Mesh connection failed (daemon: {state}).\nDaemon log:\n{snip}"
+            ));
+        }
+    }
+
+    let log = read_daemon_log(&app);
+    let snip = log_snippet(&log);
+    Err(format!(
+        "Mesh connection timed out after 75s (daemon: NoState). DERP relay may be unreachable.\nDaemon log:\n{snip}"
+    ))
 }
 
 #[tauri::command]

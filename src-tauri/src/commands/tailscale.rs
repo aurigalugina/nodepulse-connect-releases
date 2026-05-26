@@ -465,38 +465,27 @@ pub async fn tailscale_up(
         }
     }
 
-    // --operator=<username> enables serverMode=true in the Tailscale daemon.
+    // --timeout=60s keeps the CLI process alive for 60s after sending prefs, so the IPN
+    // session stays open while doLogin runs. Without this, the daemon sets wantRunning=false
+    // when the last IPC client disconnects — killing the connection before auth completes.
     //
-    // Root cause of every prior failure: serverMode=false (the default when tailscaled is
-    // not a Windows service). In serverMode=false, when the LAST IPC client (e.g. the
-    // `tailscale up` CLI) disconnects, the IPN server explicitly sets wantRunning=false
-    // and shuts down the connection — every time, unconditionally, regardless of the
-    // pre-auth key or whether doLogin completed. profileDirFor, blockEngineUpdates, and
-    // the rapid retry cycles are all downstream symptoms of this forced shutdown.
+    // --force-reauth clears any stale profile state left by a previous failed attempt.
     //
-    // With --operator=<username>, Tailscale stores OperatorUser in prefs, which triggers
-    // setServerMode(true). In serverMode=true, the daemon persists after all IPC clients
-    // disconnect — doLogin runs to completion, auth succeeds, and the connection stays up.
-    //
-    // NO_PROXY=* (set on daemon env) skips the WinHTTP proxy detection that was stalling
-    // doLogin for 5-8s, making auth reach Headscale immediately.
-    let operator = std::env::var("USERNAME")
-        .or_else(|_| std::env::var("USER"))
-        .unwrap_or_else(|_| "nodepulse".to_string());
-
+    // NO_PROXY=* (set on daemon env) skips WinHTTP proxy detection that stalls doLogin.
     let _ = app.emit("connect-debug",
-        format!("[rust] tailscale up --login-server {} --hostname {} --operator={}", login_server, hostname, operator));
+        format!("[rust] tailscale up --login-server {} --hostname {} --timeout=60s --force-reauth", login_server, hostname));
 
     let up_result = tokio::time::timeout(
-        std::time::Duration::from_secs(15),
+        std::time::Duration::from_secs(75),
         tokio::process::Command::new(tailscale_bin(&app))
             .args([
-                "--socket",       &socket,
+                "--socket",        &socket,
                 "up",
-                "--login-server", &login_server,
-                "--authkey",      &authkey,
-                "--hostname",     &hostname,
-                "--operator",     &operator,
+                "--login-server",  &login_server,
+                "--authkey",       &authkey,
+                "--hostname",      &hostname,
+                "--timeout",       "60s",
+                "--force-reauth",
             ])
             .output(),
     ).await;

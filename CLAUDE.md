@@ -193,6 +193,12 @@ tar = "0.4"
 ## Known Issues / Under Investigation
 - **Windows joining mesh slow**: Inherent ke Windows userspace networking init. Max wait ~87s (15+10 iter × 3.5s) sebelum `tailscale up` 60s timeout. Biasanya selesai dalam 20-40 detik.
 
+## Version History (recent)
+- **v0.3.38** — Remove `--operator` flag (not defined in Tailscale 1.98.2); restore `--timeout=60s --force-reauth`; Tokio wrapper 75s
+- **v0.3.37** — `--timeout=60s` restored + `NO_PROXY=*` (correct combo for profileDirFor fix)
+- **v0.3.36** — Keep statedir across attempts; `NO_PROXY=*`
+- **v0.3.35** — Remove `--timeout=60s`; 75s post-up polling loop; reusable pre-auth keys
+
 ## DO NOT
 - Jangan pakai httpOnly cookie — desktop app pakai Bearer token
 - Jangan tambah page routing (tidak ada SvelteKit pages, semua satu halaman)

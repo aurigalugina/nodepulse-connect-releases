@@ -254,12 +254,22 @@ pub fn start_daemon(app: &tauri::AppHandle) {
         Err(_) => (std::process::Stdio::null(), std::process::Stdio::null()),
     };
 
+    // Use an explicit file path inside statedir instead of --state mem:.
+    // With mem:, when the `tailscale up` CLI disconnects the daemon calls profileDirFor()
+    // to clean up, but the in-memory profile map races and the profile is "not found" →
+    // blockEngineUpdates(true) → stuck. With a file-based state the profile is written to
+    // disk before the CLI exits, so profileDirFor() always finds it.
+    // We avoid Windows registry pollution by using an explicit path (not --state auto:).
+    // The state file lives inside statedir, so wiping statedir always starts fresh.
+    let state_file = state_dir.join("tailscale.state");
+    let state_file_str = state_file.to_str().unwrap_or("").to_string();
+
     match std::process::Command::new(&bin)
         .args([
             "--tun=userspace-networking",
             "--socket", &socket,
             "--statedir", state_dir.to_str().unwrap_or(""),
-            "--state", "mem:",
+            "--state", &state_file_str,
         ])
         .stdout(stdout_s)
         .stderr(stderr_s)

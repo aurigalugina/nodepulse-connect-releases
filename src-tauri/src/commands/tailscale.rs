@@ -555,6 +555,12 @@ pub async fn tailscale_up(
 
 #[tauri::command]
 pub async fn tailscale_down(app: tauri::AppHandle) -> Result<(), String> {
-    let _ = run_ts(&app, &["logout"]).await;
+    // Use "down" not "logout": logout deletes the profile data directory (<statedir>/profiles/<id>/)
+    // which causes the next connection attempt to fail with "profile data directory: profile not found"
+    // → blockEngineUpdates(true) → engine permanently blocked → doLogin can never transition to Running.
+    // "down" sets WantRunning=false and stops the connection but preserves the profile directory,
+    // so profileDirFor() succeeds on the next attempt and no unexpected blockEngineUpdates fires.
+    // Ephemeral keys on the backend ensure stale nodes are auto-removed from Headscale.
+    let _ = run_ts(&app, &["down"]).await;
     Ok(())
 }

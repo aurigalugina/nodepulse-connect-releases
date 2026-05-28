@@ -79,6 +79,7 @@ jobs:
         if: matrix.platform == 'windows-latest'
         shell: pwsh
         run: |
+          $ErrorActionPreference = "Stop"
           git clone --depth 1 --branch v1.98.2 https://github.com/tailscale/tailscale tailscale-src
 
           # Patch 1: SDDL — remove O:BA owner so non-admin users can create named pipe
@@ -157,9 +158,20 @@ jobs:
           New-Item -ItemType Directory -Force -Path src-tauri\binaries | Out-Null
           Push-Location tailscale-src
           go build -o "..\src-tauri\binaries\tailscaled-x86_64-pc-windows-msvc.exe" .\cmd\tailscaled
+          if ($LASTEXITCODE -ne 0) { Write-Error "go build tailscaled failed (exit $LASTEXITCODE)"; exit 1 }
           go build -o "..\src-tauri\binaries\tailscale-x86_64-pc-windows-msvc.exe" .\cmd\tailscale
+          if ($LASTEXITCODE -ne 0) { Write-Error "go build tailscale failed (exit $LASTEXITCODE)"; exit 1 }
           Pop-Location
           Remove-Item tailscale-src -Recurse -Force
+
+          # Verify binaries exist before Tauri build
+          if (-not (Test-Path "src-tauri\binaries\tailscaled-x86_64-pc-windows-msvc.exe")) {
+            Write-Error "tailscaled binary not found after build — aborting"; exit 1
+          }
+          if (-not (Test-Path "src-tauri\binaries\tailscale-x86_64-pc-windows-msvc.exe")) {
+            Write-Error "tailscale binary not found after build — aborting"; exit 1
+          }
+          Write-Host "Binaries verified OK"
 
       # macOS: install Tailscale via Homebrew, copy binaries into src-tauri/binaries/
       - name: Bundle Tailscale binaries (macOS)

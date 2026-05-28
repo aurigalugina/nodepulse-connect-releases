@@ -194,7 +194,8 @@ tar = "0.4"
 - **Windows joining mesh slow**: Inherent ke Windows userspace networking init. Max wait ~87s (15+10 iter × 3.5s) sebelum `tailscale up` 60s timeout. Biasanya selesai dalam 20-40 detik.
 
 ## Version History (recent)
-- **v0.3.41** — `tailscale set --operator=<username>` before `tailscale up`; sets `serverMode=true` so `b.Start()` not called on CLI disconnect; doLogin completes after CLI exits
+- **v0.3.42** — `tailscale set --update-check=false` (settle b.Start() cycle) + remove NoState early bail; doLogin runs for full 75s window after tailscale up exits
+- **v0.3.41** — `tailscale set --operator=<username>` before `tailscale up`; showed doLogin runs after CLI exit (b.Start no longer called)
 - **v0.3.40** — Wipe statedir on connect + remove `--force-reauth`; clean daemon start prevents startup `blockEngineUpdates`
 - **v0.3.39** — `tailscale_down`: `logout` → `down`; preserves `profiles/<id>/` dir so `profileDirFor` succeeds on next reconnect
 - **v0.3.38** — Remove `--operator` flag (not defined in Tailscale 1.98.2); restore `--timeout=60s --force-reauth`; Tokio wrapper 75s

@@ -443,53 +443,48 @@ pub async fn tailscale_up(
         return Err(format!("Tailscale daemon failed to start.\n{detail}"));
     }
 
-    // Set operator user to enable server mode BEFORE tailscale up.
+    // Trigger one b.Start() cycle BEFORE tailscale up by sending any prefs command.
     //
-    // Root cause of all recent failures: tailscale up CLI exits ~4s after prefs are ACKed
-    // (--timeout=60s only works for interactive browser auth, NOT authkey flows).
-    // When the CLI exits, b.Start(serverMode=false) resets the entire IPN layer, cancels
-    // all in-progress doLogin operations, and forces WantRunning=false — even though DERP
-    // was already established and auth was in progress.
+    // Root cause of failures: `tailscale up` CLI exits ~4s after prefs are ACKed.
+    // When the first IPN client disconnect occurs, b.Start(serverMode=false) is called,
+    // resetting the entire IPN layer and cancelling doLogin.
     //
-    // Fix: `tailscale set --operator=<username>` writes OperatorUser to the state file.
-    // On the next b.Start() call (from tailscale set's own disconnect), the daemon reads
-    // OperatorUser → serverMode=true. In server mode, subsequent client disconnects do NOT
-    // call b.Start() — the daemon maintains its connections independently. doLogin that was
-    // started by `tailscale up` can complete without interruption.
+    // Empirical finding (v0.3.41): if the daemon has ALREADY completed one b.Start() cycle
+    // before tailscale up runs (i.e., a prior IPN client connected + disconnected), then
+    // tailscale up's subsequent disconnect does NOT trigger b.Start() again. The doLogin
+    // started by tailscale up continues running after the CLI exits.
+    //
+    // `tailscale set --update-check=false` is a benign prefs change (disables Tailscale's
+    // own update notifications — we have our own updater) that connects as an IPN client
+    // and triggers the settling b.Start() cycle. After 800ms the daemon is in a stable
+    // NeedsLogin state and subsequent client disconnects skip the reset path.
     {
-        #[cfg(target_os = "windows")]
-        let username = std::env::var("USERNAME").unwrap_or_default();
-        #[cfg(not(target_os = "windows"))]
-        let username = std::env::var("USER").unwrap_or_default();
-
-        if !username.is_empty() {
-            let _ = app.emit("connect-debug", format!("[rust] tailscale set --operator={username}"));
-            let set_result = tokio::time::timeout(
-                std::time::Duration::from_secs(10),
-                tokio::process::Command::new(tailscale_bin(&app))
-                    .args(["--socket", &socket, "set", "--operator", &username])
-                    .output(),
-            ).await;
-            match set_result {
-                Ok(Ok(out)) if out.status.success() => {
-                    let _ = app.emit("connect-debug", "[rust] set operator ok — serverMode=true");
-                }
-                Ok(Ok(out)) => {
-                    let stderr = String::from_utf8_lossy(&out.stderr);
-                    let _ = app.emit("connect-debug",
-                        format!("[rust] set operator exit={} stderr={:?}",
-                            out.status.code().unwrap_or(-1), stderr.trim()));
-                }
-                Ok(Err(e)) => {
-                    let _ = app.emit("connect-debug", format!("[rust] set operator spawn error: {e}"));
-                }
-                Err(_) => {
-                    let _ = app.emit("connect-debug", "[rust] set operator timed out");
-                }
+        let _ = app.emit("connect-debug", "[rust] tailscale set --update-check=false (settle daemon)");
+        let set_result = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            tokio::process::Command::new(tailscale_bin(&app))
+                .args(["--socket", &socket, "set", "--update-check=false"])
+                .output(),
+        ).await;
+        match set_result {
+            Ok(Ok(out)) if out.status.success() => {
+                let _ = app.emit("connect-debug", "[rust] settle ok");
             }
-            // Wait for b.Start(serverMode=true) to complete after tailscale set exits.
-            tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+            Ok(Ok(out)) => {
+                let stderr = String::from_utf8_lossy(&out.stderr);
+                let _ = app.emit("connect-debug",
+                    format!("[rust] settle exit={} stderr={:?}",
+                        out.status.code().unwrap_or(-1), stderr.trim()));
+            }
+            Ok(Err(e)) => {
+                let _ = app.emit("connect-debug", format!("[rust] settle spawn error: {e}"));
+            }
+            Err(_) => {
+                let _ = app.emit("connect-debug", "[rust] settle timed out");
+            }
         }
+        // Wait for the b.Start() cycle triggered by tailscale set's disconnect to complete.
+        tokio::time::sleep(std::time::Duration::from_millis(800)).await;
     }
 
     // Poll until BackendState exits NoState — with clean statedir this is always NoState
@@ -575,9 +570,11 @@ pub async fn tailscale_up(
             let _ = app.emit("connect-debug", "[rust] connected!");
             return Ok("Connected".to_string());
         }
-        // If the daemon explicitly stopped (WantRunning=false), bail early — no point waiting.
-        // Give 15s grace before treating NoState as terminal (daemon may still be initializing).
-        if state == "Stopped" || (state == "NoState" && i > 5) {
+        // Bail on Stopped (WantRunning=false, connection explicitly rejected).
+        // Do NOT bail on NoState — after the settle cycle, doLogin runs after tailscale up
+        // exits and can take 20-60s before transitioning away from NoState. The old
+        // "bail after 18s of NoState" caused premature abort while doLogin was still active.
+        if state == "Stopped" {
             let log = read_daemon_log(&app);
             let snip = log_snippet(&log);
             let _ = app.emit("connect-debug", format!("[rust] daemon stopped early: {snip}"));

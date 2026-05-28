@@ -166,6 +166,81 @@ jobs:
             }
           }
 
+          # Patch 4: Fix "profile data directory: profile not found"
+          #
+          # Root cause: when b.Start() is called after the tailscale CLI disconnects,
+          # the profile manager looks for a profile data directory on the filesystem.
+          # This directory is only created after doLogin COMPLETES (i.e. after the node
+          # receives a node map from Headscale). But our CLI exits in ~3s (pre-auth key
+          # flow exits immediately), before doLogin finishes. So the directory doesn't
+          # exist yet, the profile manager falls back to empty prefs (WantRunning=false),
+          # and control.Shutdown() is called — canceling the in-progress doLogin.
+          #
+          # Fix: find the code that logs "profile data directory: profile not found"
+          # and patch it to create the directory with os.MkdirAll instead of failing.
+          # This lets the profile manager load prefs from the state store (WantRunning=true)
+          # rather than falling back to empty defaults.
+          $patch4_applied = $false
+          $profileMsg = 'profile data directory: profile not found'
+          $patch4File = $null
+
+          Get-ChildItem tailscale-src -Recurse -Filter "*.go" | ForEach-Object {
+            if ($null -eq $patch4File) {
+              $c = [System.IO.File]::ReadAllText($_.FullName)
+              if ($c -match [regex]::Escape($profileMsg)) { $patch4File = $_.FullName }
+            }
+          }
+
+          if ($null -eq $patch4File) {
+            Write-Host "Patch 4: message not found in source — skipping"
+          } else {
+            Write-Host "Patch 4: found in $patch4File"
+            $src4 = [System.IO.File]::ReadAllText($patch4File)
+
+            # Always dump context for diagnostics
+            $lines4 = $src4.Split("`n")
+            for ($i = 0; $i -lt $lines4.Count; $i++) {
+              if ($lines4[$i] -match [regex]::Escape($profileMsg)) {
+                $s = [Math]::Max(0, $i-12); $e = [Math]::Min($lines4.Count-1, $i+5)
+                Write-Host "=== Patch 4 context (lines $($s+1)-$($e+1)) ==="
+                for ($j = $s; $j -le $e; $j++) { Write-Host "  $($j+1): $($lines4[$j])" }
+              }
+            }
+
+            # Strategy A: line-by-line scan.
+            # For each line containing os.Stat(<var>), look ahead ≤10 lines for our log message.
+            # If found, insert os.MkdirAll(<var>, 0o700) before the stat line so the
+            # directory always exists when the stat check runs — making it succeed instead
+            # of falling back to empty prefs (WantRunning=false).
+            $lines4 = $src4.Split("`n")
+            $out4   = [System.Collections.Generic.List[string]]::new()
+            for ($i = 0; $i -lt $lines4.Count; $i++) {
+              if ($lines4[$i] -match 'os\.Stat\((\w+)\)') {
+                $dirVar = $Matches[1]
+                $lookahead = $false
+                for ($j = $i+1; $j -le [Math]::Min($i+10, $lines4.Count-1); $j++) {
+                  if ($lines4[$j] -match [regex]::Escape($profileMsg)) { $lookahead = $true; break }
+                }
+                if ($lookahead) {
+                  $indent = if ($lines4[$i] -match '^([ \t]+)') { $Matches[1] } else { "`t" }
+                  $out4.Add("${indent}os.MkdirAll(${dirVar}, 0o700) /* NodePulse patch 4: create profile dir so stat succeeds */")
+                  Write-Host "Patch 4 strategy A: inserted MkdirAll($dirVar) before line $($i+1)"
+                  $patch4_applied = $true
+                }
+              }
+              $out4.Add($lines4[$i])
+            }
+            if ($patch4_applied) {
+              [System.IO.File]::WriteAllText($patch4File, ($out4 -join "`n"))
+              Write-Host "Patch 4 applied (strategy A)"
+            }
+
+            if (-not $patch4_applied) {
+              Write-Host "Patch 4: strategy A did not match — inspect context above and add targeted strategy."
+              Write-Error "Patch 4 failed — profile-not-found code must be fixed"; exit 1
+            }
+          }
+
           New-Item -ItemType Directory -Force -Path src-tauri\binaries | Out-Null
           Push-Location tailscale-src
           go build -o "..\src-tauri\binaries\tailscaled-x86_64-pc-windows-msvc.exe" .\cmd\tailscaled

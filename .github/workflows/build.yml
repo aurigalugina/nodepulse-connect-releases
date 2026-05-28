@@ -153,15 +153,18 @@ jobs:
           }
 
           if (-not $patch3_applied) {
-            # Dump all lines with 'server' or 'mode' near Start() for diagnosis
-            Write-Host "=== Patch 3 FAILED — diagnostics ==="
-            Write-Host "--- Lines containing 'serverMode' ---"
-            $src.Split("`n") | Where-Object { $_ -match 'serverMode' } | ForEach-Object { Write-Host "  $_" }
-            Write-Host "--- Lines containing 'ServerMode' ---"
-            $src.Split("`n") | Where-Object { $_ -match 'ServerMode' } | ForEach-Object { Write-Host "  $_" }
-            Write-Host "--- func.*Start signature ---"
-            $src.Split("`n") | Where-Object { $_ -match 'func.*Start' } | ForEach-Object { Write-Host "  $_" }
-            Write-Error "Patch 3 failed — add a new strategy based on diagnostics above"; exit 1
+            # Check if v1.98.2+ already has 'runtime.GOOS == "windows"' in the serverMode
+            # condition — which hardcodes server mode = true for all Windows builds.
+            # In that case, Patch 3 is a no-op and we can safely skip it.
+            $hasWindowsHardcode = $src -match 'inServerMode\s*\|\|\s*runtime\.GOOS\s*==\s*"windows"'
+            if ($hasWindowsHardcode) {
+              Write-Host "Patch 3 SKIPPED: v1.98.2 already has 'runtime.GOOS == windows' hardcode — server mode is always true on Windows builds. No patch needed."
+            } else {
+              Write-Host "=== Patch 3 FAILED — diagnostics ==="
+              $src.Split("`n") | Where-Object { $_ -match 'serverMode|ServerMode' } | ForEach-Object { Write-Host "  $_" }
+              $src.Split("`n") | Where-Object { $_ -match 'func.*Start' } | ForEach-Object { Write-Host "  $_" }
+              Write-Error "Patch 3 failed and no Windows hardcode found — manual investigation required"; exit 1
+            }
           }
 
           New-Item -ItemType Directory -Force -Path src-tauri\binaries | Out-Null

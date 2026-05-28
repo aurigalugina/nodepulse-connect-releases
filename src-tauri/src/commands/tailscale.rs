@@ -443,54 +443,11 @@ pub async fn tailscale_up(
         return Err(format!("Tailscale daemon failed to start.\n{detail}"));
     }
 
-    // Enable unattended mode BEFORE tailscale up — Windows equivalent of server mode.
-    //
-    // Root cause: tailscale up CLI exits ~4s after prefs are ACKed. In non-server mode,
-    // this disconnect calls b.Start(serverMode=false) which resets the IPN layer, cancels
-    // doLogin, and forces WantRunning=false. State stays at NoState indefinitely.
-    //
-    // System Tailscale works because it runs as a Windows Service (serverMode=true).
-    // `tailscale set --unattended=true` enables "Unattended Mode" — keeps the daemon
-    // running without a logged-in user session, which is the Windows-native equivalent
-    // of serverMode=true. With server mode, b.Start() is NOT called when an IPN client
-    // (tailscale up) disconnects. doLogin continues to completion. State reaches Running.
-    //
-    // On disconnect (tailscale_down), --unattended=false is set to restore normal mode.
-    #[cfg(target_os = "windows")]
-    {
-        let _ = app.emit("connect-debug", "[rust] tailscale set --unattended=true");
-        let set_result = tokio::time::timeout(
-            std::time::Duration::from_secs(10),
-            tokio::process::Command::new(tailscale_bin(&app))
-                .args(["--socket", &socket, "set", "--unattended=true"])
-                .output(),
-        ).await;
-        match set_result {
-            Ok(Ok(out)) if out.status.success() => {
-                let _ = app.emit("connect-debug", "[rust] unattended=true ok");
-            }
-            Ok(Ok(out)) => {
-                let stderr = String::from_utf8_lossy(&out.stderr);
-                let _ = app.emit("connect-debug",
-                    format!("[rust] unattended=true exit={} stderr={:?}",
-                        out.status.code().unwrap_or(-1), stderr.trim()));
-            }
-            Ok(Err(e)) => {
-                let _ = app.emit("connect-debug", format!("[rust] unattended=true spawn error: {e}"));
-            }
-            Err(_) => {
-                let _ = app.emit("connect-debug", "[rust] unattended=true timed out");
-            }
-        }
-        // Wait for daemon to process unattended mode and settle.
-        tokio::time::sleep(std::time::Duration::from_millis(800)).await;
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        // On Linux/macOS the daemon is managed differently — no unattended flag needed.
-        // A short settle delay still helps the daemon reach a stable state before tailscale up.
-        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-    }
+    // With the patched tailscaled binary (serverMode always true), b.Start() no longer
+    // resets WantRunning when an IPN client (tailscale up CLI) disconnects. doLogin runs
+    // to completion after tailscale up exits. A brief settle delay lets the daemon reach
+    // stable NeedsLogin state before we send prefs.
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
     // Poll until BackendState exits NoState — with clean statedir this is always NoState
     // until tailscale up sends prefs, but we keep it for robustness / diagnostics.
@@ -598,11 +555,8 @@ pub async fn tailscale_up(
 
 #[tauri::command]
 pub async fn tailscale_down(app: tauri::AppHandle) -> Result<(), String> {
-    // Restore normal (non-unattended) mode before stopping, so the daemon doesn't
-    // auto-reconnect after the user explicitly disconnects.
-    #[cfg(target_os = "windows")]
-    let _ = run_ts(&app, &["set", "--unattended=false"]).await;
-
+    // With serverMode=true (patched binary), tailscale down sets WantRunning=false and
+    // the daemon stops routing. Next connection attempt kills+restarts the daemon anyway.
     let _ = run_ts(&app, &["down"]).await;
     Ok(())
 }

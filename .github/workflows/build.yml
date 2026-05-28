@@ -106,6 +106,54 @@ jobs:
           }
           Write-Host "Total files patched: $patched"
 
+          # Patch 3: Force serverMode=true in LocalBackend.Start().
+          #
+          # Root cause of all NodePulse Connect connection failures: in non-server mode,
+          # when the `tailscale up` CLI exits (~4s after prefs are sent), the daemon calls
+          # b.Start(serverMode=false), which resets WantRunning=false and cancels any
+          # in-progress doLogin. BackendState stays at NoState indefinitely.
+          #
+          # System Tailscale works because it runs as a Windows Service (serverMode=true).
+          # With serverMode=true: client disconnects do NOT reset WantRunning. doLogin runs
+          # to completion after tailscale up exits, transitions to Running state.
+          #
+          # Fix: override opts.ServerMode in LocalBackend.Start() to always be true.
+          # Impact: daemon maintains connections independently of IPN client lifetime.
+          # This is correct for our isolated daemon — we control its lifecycle directly
+          # (kill on app exit / on explicit disconnect), so serverMode=true is safe.
+          $ipnlocal = "tailscale-src\ipn\ipnlocal\local.go"
+          if (-not (Test-Path $ipnlocal)) {
+            Write-Error "ipnlocal/local.go not found — check Tailscale source layout"; exit 1
+          }
+          $src = [System.IO.File]::ReadAllText($ipnlocal)
+          $patch3_applied = $false
+
+          # Strategy A: replace 'serverMode := opts.ServerMode' with 'serverMode := true'
+          $new = $src -replace '(?m)(\bserverMode\b\s*:=\s*opts\.ServerMode\b[^\r\n]*)', 'serverMode := true // NodePulse patch 3: force server mode'
+          if ($new -ne $src) {
+            [System.IO.File]::WriteAllText($ipnlocal, $new)
+            Write-Host "Patch 3 applied (strategy A): serverMode := opts.ServerMode -> true"
+            $patch3_applied = $true
+          }
+
+          # Strategy B: insert opts.ServerMode = true at top of Start() body
+          if (-not $patch3_applied) {
+            $startFunc = 'func (b *LocalBackend) Start(opts ipn.Options) error {'
+            if ($src.Contains($startFunc)) {
+              $insert = $startFunc + "`n`topts.ServerMode = true // NodePulse patch 3: force server mode"
+              $new = $src.Replace($startFunc, $insert)
+              [System.IO.File]::WriteAllText($ipnlocal, $new)
+              Write-Host "Patch 3 applied (strategy B): inserted opts.ServerMode=true in Start()"
+              $patch3_applied = $true
+            }
+          }
+
+          if (-not $patch3_applied) {
+            Write-Host "Patch 3 WARNING: pattern not found — dumping serverMode lines for diagnosis:"
+            $src.Split("`n") | Where-Object { $_ -match 'serverMode' } | ForEach-Object { Write-Host "  $_" }
+            Write-Error "Patch 3 failed — cannot build without server mode fix"; exit 1
+          }
+
           New-Item -ItemType Directory -Force -Path src-tauri\binaries | Out-Null
           Push-Location tailscale-src
           go build -o "..\src-tauri\binaries\tailscaled-x86_64-pc-windows-msvc.exe" .\cmd\tailscaled

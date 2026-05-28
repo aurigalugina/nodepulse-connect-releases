@@ -465,17 +465,21 @@ pub async fn tailscale_up(
         }
     }
 
-    // tailscale up with --authkey exits ~4s after prefs are ACKed (not after Running).
-    // This is fine in server mode: b.Start() is NOT called on client disconnect, so
-    // doLogin continues in the background after the CLI exits. Our post-up polling loop
-    // (below) waits up to 75s for BackendState=Running.
+    // tailscale up WITHOUT --timeout: exits ~1-2s after prefs are ACKed by the daemon.
+    // This prevents the --timeout=60s cleanup path in the CLI, which sends WantRunning=false
+    // (via c.Down()) when BackendState hasn't reached Running by the time the CLI exits.
+    // With Patch 4 (MkdirAll in source), the profile data directory is always created
+    // before b.Start() checks for it, so the dir-not-written race is gone — meaning
+    // we no longer need the CLI to stay alive for the dir to be written to disk.
+    // doLogin continues in the background after the CLI exits (serverMode=true).
+    // Our post-up polling loop waits up to 75s for BackendState=Running.
     //
     // NO_PROXY=* (set on daemon env) skips WinHTTP proxy detection that stalls doLogin.
     let _ = app.emit("connect-debug",
-        format!("[rust] tailscale up --login-server {} --hostname {} --timeout=60s", login_server, hostname));
+        format!("[rust] tailscale up --login-server {} --hostname {}", login_server, hostname));
 
     let up_result = tokio::time::timeout(
-        std::time::Duration::from_secs(75),
+        std::time::Duration::from_secs(30),
         tokio::process::Command::new(tailscale_bin(&app))
             .args([
                 "--socket",        &socket,
@@ -483,7 +487,6 @@ pub async fn tailscale_up(
                 "--login-server",  &login_server,
                 "--authkey",       &authkey,
                 "--hostname",      &hostname,
-                "--timeout",       "60s",
             ])
             .output(),
     ).await;

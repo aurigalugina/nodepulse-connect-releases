@@ -133,7 +133,7 @@ jobs:
 
           # Strategy A: target 'inServerMode := prefs.ForceDaemon()' — the exact pattern
           # in v1.98.2. Force it to true so WantRunning is NOT reset on CLI disconnect.
-          $new = $src -replace 'inServerMode\s*:=\s*prefs\.ForceDaemon\(\)', 'inServerMode := true // NodePulse patch 3: force server mode'
+          $new = $src -replace 'inServerMode\s*:=\s*prefs\.ForceDaemon\(\)', 'inServerMode := true /* NodePulse patch 3: force server mode */'
           if ($new -ne $src) {
             [System.IO.File]::WriteAllText($ipnlocal, $new)
             Write-Host "Patch 3 applied (strategy A): inServerMode := prefs.ForceDaemon() -> true"
@@ -142,7 +142,7 @@ jobs:
 
           # Strategy B: broader — any 'inServerMode := <non-true expr>' declaration
           if (-not $patch3_applied) {
-            $replB = '${1}true // NodePulse patch 3: force server mode'
+            $replB = '${1}true /* NodePulse patch 3: force server mode */'
             $new = $src -replace '(?m)([ \t]*if\s+inServerMode\s*:=\s*)(?!true\b)[^;]+', $replB
             if ($new -ne $src) {
               [System.IO.File]::WriteAllText($ipnlocal, $new)

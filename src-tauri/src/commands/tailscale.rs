@@ -406,36 +406,30 @@ pub async fn tailscale_up(
 ) -> Result<String, String> {
     let socket = socket_path(&app);
 
-    // Always kill and restart the daemon before each connection attempt.
+    // Kill daemon + wipe statedir + restart fresh before every connect attempt.
     //
-    // Root cause: both `tailscale down` and `tailscale logout` set blockEngineUpdates(true)
-    // inside the daemon and never reset it to false when using --state mem:.
-    // Normally resetForProfileChange() would call blockEngineUpdates(false) when a profile
-    // is reloaded from persistent state — but mem: state has nothing to reload, so the
-    // engine stays permanently blocked. tailscale up connects (exit=0), the daemon silently
-    // drops the request, and status stays NoState.
+    // WHY WIPE: If tailscale.state exists from a previous session with WantRunning=true,
+    // the daemon reads it on startup and immediately runs an authRoutine to auto-reconnect.
+    // Since no IPN client is connected yet, WantRunning transitions to false and the
+    // authRoutine exits. But before exiting, the NoState→NeedsLogin transition calls
+    // blockEngineUpdates(true) — which is never reset (no successful doLogin occurred).
+    // By the time `tailscale up` runs, blockEngineUpdates is already true, so even a
+    // successful auth exchange can't transition the state to Running.
     //
-    // The only way to clear blockEngineUpdates is to restart the daemon process.
+    // With a clean statedir the daemon starts in pure NoState with no saved prefs,
+    // no auto-init, and no blockEngineUpdates at startup. The first blockEngineUpdates(true)
+    // happens when `tailscale up` causes the NoState→NeedsLogin transition — and it gets
+    // reset to false by Tailscale's resetForProfileChange() when doLogin succeeds.
     //
-    // Race fix: daemon_can_respond confirms the IPC socket is alive, but the profile
-    // manager needs a few more milliseconds to fully initialize. We poll BackendState
-    // until it transitions out of NoState before calling tailscale up — this ensures
-    // the profile creation in tailscale up lands on a fully-ready profile manager.
-    // Kill the daemon to restart it with a clean process, but DO NOT wipe the statedir.
-    //
-    // Why: Tailscale creates a profile data directory (<statedir>/profiles/<id>/) during
-    // doLogin setup. When the `tailscale up` CLI exits, the IPN server cleanup calls
-    // profileDirFor() to clean up per-client state. If the profile data dir doesn't exist
-    // (because we wiped statedir), profileDirFor returns "profile not found" and the cleanup
-    // path calls blockEngineUpdates(true) — permanently blocking the engine.
-    //
-    // By keeping the statedir, the profile data dir from the previous (or current) doLogin
-    // attempt persists, so profileDirFor() finds it and cleanup completes without error.
-    // The state file (WantRunning=false, stale key) is overridden by `tailscale up --authkey=xxx`.
+    // WHY NO --force-reauth (see below): removing it lets `tailscale up --timeout=60s`
+    // actually wait 60s for Running. With a clean statedir there is no stale node key to
+    // force-clear, so --force-reauth is unnecessary.
     let _ = app.emit("connect-debug", "[rust] killing daemon…");
     app.state::<DaemonHandle>().kill();
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     let state_dir = data_dir(&app);
+    // Wipe statedir so daemon has no saved WantRunning=true to auto-init from.
+    let _ = std::fs::remove_dir_all(&state_dir);
     let _ = std::fs::create_dir_all(&state_dir);
     let _ = app.emit("connect-debug", "[rust] starting fresh daemon…");
     start_daemon(&app);
@@ -449,8 +443,8 @@ pub async fn tailscale_up(
         return Err(format!("Tailscale daemon failed to start.\n{detail}"));
     }
 
-    // Poll until BackendState exits NoState — signals profile manager fully initialized.
-    // With a pre-existing statedir the daemon can take longer to start (up to ~10s).
+    // Poll until BackendState exits NoState — with clean statedir this is always NoState
+    // until tailscale up sends prefs, but we keep it for robustness / diagnostics.
     for i in 0..20u8 {
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         let probe = run_ts(&app, &["status", "--json"]).await;
@@ -465,15 +459,19 @@ pub async fn tailscale_up(
         }
     }
 
-    // --timeout=60s keeps the CLI process alive for 60s after sending prefs, so the IPN
-    // session stays open while doLogin runs. Without this, the daemon sets wantRunning=false
-    // when the last IPC client disconnects — killing the connection before auth completes.
+    // --timeout=60s keeps the CLI process alive for up to 60s waiting for Running state.
+    // This is essential: with a clean statedir, doLogin runs while the CLI is connected.
+    // Tailscale calls blockEngineUpdates(false) + applies the netmap when doLogin succeeds,
+    // transitioning to Running. The CLI sees Running and exits 0. profileDirFor then finds
+    // the profile directory that doLogin already created — no blockEngineUpdates from cleanup.
     //
-    // --force-reauth clears any stale profile state left by a previous failed attempt.
+    // --force-reauth is NOT used: it causes tailscale up to exit ~4s after NeedsLogin is
+    // reached (not after Running), defeating --timeout=60s. With a clean statedir there is
+    // no stale node key to clear — the provided --authkey is always used for a fresh login.
     //
     // NO_PROXY=* (set on daemon env) skips WinHTTP proxy detection that stalls doLogin.
     let _ = app.emit("connect-debug",
-        format!("[rust] tailscale up --login-server {} --hostname {} --timeout=60s --force-reauth", login_server, hostname));
+        format!("[rust] tailscale up --login-server {} --hostname {} --timeout=60s", login_server, hostname));
 
     let up_result = tokio::time::timeout(
         std::time::Duration::from_secs(75),
@@ -485,7 +483,6 @@ pub async fn tailscale_up(
                 "--authkey",       &authkey,
                 "--hostname",      &hostname,
                 "--timeout",       "60s",
-                "--force-reauth",
             ])
             .output(),
     ).await;

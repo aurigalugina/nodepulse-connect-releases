@@ -132,30 +132,36 @@ jobs:
           $src = [System.IO.File]::ReadAllText($ipnlocal)
           $patch3_applied = $false
 
-          # Strategy A: replace any 'serverMode := <expr>' (catches opts.ServerMode,
-          # prefs.ServerMode(), b.store.Get(...), etc. — whatever form v1.98.2 uses)
-          $new = $src -replace '(?m)([ \t]+serverMode\s*:=\s*)(?!true\b)[^\r\n]*', '${1}true // NodePulse patch 3: force server mode'
+          # Strategy A: replace any 'serverMode := <expr>' declaration
+          $replA = '${1}true // NodePulse patch 3: force server mode'
+          $new = $src -replace '(?m)([ \t]+serverMode\s*:=\s*)(?!true\b)[^\r\n]*', $replA
           if ($new -ne $src) {
             [System.IO.File]::WriteAllText($ipnlocal, $new)
             Write-Host "Patch 3 applied (strategy A): serverMode := <expr> -> true"
             $patch3_applied = $true
           }
 
-          # Strategy B: if no ':=' declaration found, look for 'var serverMode bool' and
-          # insert an assignment on the next line
+          # Strategy B: 'var serverMode bool' declaration — insert assignment after it
           if (-not $patch3_applied) {
-            $new = $src -replace '(?m)([ \t]+var\s+serverMode\s+bool\b[^\r\n]*)', '$1' + "`n`t" + 'serverMode = true // NodePulse patch 3: force server mode'
+            $replB = '$1' + "`n`t`tserverMode = true // NodePulse patch 3: force server mode"
+            $new = $src -replace '(?m)([ \t]+var\s+serverMode\s+bool\b[^\r\n]*)', $replB
             if ($new -ne $src) {
               [System.IO.File]::WriteAllText($ipnlocal, $new)
-              Write-Host "Patch 3 applied (strategy B): var serverMode bool + assignment"
+              Write-Host "Patch 3 applied (strategy B): var serverMode bool + forced assignment"
               $patch3_applied = $true
             }
           }
 
           if (-not $patch3_applied) {
-            Write-Host "Patch 3 WARNING: pattern not found — dumping serverMode lines for diagnosis:"
+            # Dump all lines with 'server' or 'mode' near Start() for diagnosis
+            Write-Host "=== Patch 3 FAILED — diagnostics ==="
+            Write-Host "--- Lines containing 'serverMode' ---"
             $src.Split("`n") | Where-Object { $_ -match 'serverMode' } | ForEach-Object { Write-Host "  $_" }
-            Write-Error "Patch 3 failed — cannot build without server mode fix"; exit 1
+            Write-Host "--- Lines containing 'ServerMode' ---"
+            $src.Split("`n") | Where-Object { $_ -match 'ServerMode' } | ForEach-Object { Write-Host "  $_" }
+            Write-Host "--- func.*Start signature ---"
+            $src.Split("`n") | Where-Object { $_ -match 'func.*Start' } | ForEach-Object { Write-Host "  $_" }
+            Write-Error "Patch 3 failed — add a new strategy based on diagnostics above"; exit 1
           }
 
           New-Item -ItemType Directory -Force -Path src-tauri\binaries | Out-Null

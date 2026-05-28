@@ -443,6 +443,55 @@ pub async fn tailscale_up(
         return Err(format!("Tailscale daemon failed to start.\n{detail}"));
     }
 
+    // Set operator user to enable server mode BEFORE tailscale up.
+    //
+    // Root cause of all recent failures: tailscale up CLI exits ~4s after prefs are ACKed
+    // (--timeout=60s only works for interactive browser auth, NOT authkey flows).
+    // When the CLI exits, b.Start(serverMode=false) resets the entire IPN layer, cancels
+    // all in-progress doLogin operations, and forces WantRunning=false — even though DERP
+    // was already established and auth was in progress.
+    //
+    // Fix: `tailscale set --operator=<username>` writes OperatorUser to the state file.
+    // On the next b.Start() call (from tailscale set's own disconnect), the daemon reads
+    // OperatorUser → serverMode=true. In server mode, subsequent client disconnects do NOT
+    // call b.Start() — the daemon maintains its connections independently. doLogin that was
+    // started by `tailscale up` can complete without interruption.
+    {
+        #[cfg(target_os = "windows")]
+        let username = std::env::var("USERNAME").unwrap_or_default();
+        #[cfg(not(target_os = "windows"))]
+        let username = std::env::var("USER").unwrap_or_default();
+
+        if !username.is_empty() {
+            let _ = app.emit("connect-debug", format!("[rust] tailscale set --operator={username}"));
+            let set_result = tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                tokio::process::Command::new(tailscale_bin(&app))
+                    .args(["--socket", &socket, "set", "--operator", &username])
+                    .output(),
+            ).await;
+            match set_result {
+                Ok(Ok(out)) if out.status.success() => {
+                    let _ = app.emit("connect-debug", "[rust] set operator ok — serverMode=true");
+                }
+                Ok(Ok(out)) => {
+                    let stderr = String::from_utf8_lossy(&out.stderr);
+                    let _ = app.emit("connect-debug",
+                        format!("[rust] set operator exit={} stderr={:?}",
+                            out.status.code().unwrap_or(-1), stderr.trim()));
+                }
+                Ok(Err(e)) => {
+                    let _ = app.emit("connect-debug", format!("[rust] set operator spawn error: {e}"));
+                }
+                Err(_) => {
+                    let _ = app.emit("connect-debug", "[rust] set operator timed out");
+                }
+            }
+            // Wait for b.Start(serverMode=true) to complete after tailscale set exits.
+            tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+        }
+    }
+
     // Poll until BackendState exits NoState — with clean statedir this is always NoState
     // until tailscale up sends prefs, but we keep it for robustness / diagnostics.
     for i in 0..20u8 {
@@ -459,15 +508,10 @@ pub async fn tailscale_up(
         }
     }
 
-    // --timeout=60s keeps the CLI process alive for up to 60s waiting for Running state.
-    // This is essential: with a clean statedir, doLogin runs while the CLI is connected.
-    // Tailscale calls blockEngineUpdates(false) + applies the netmap when doLogin succeeds,
-    // transitioning to Running. The CLI sees Running and exits 0. profileDirFor then finds
-    // the profile directory that doLogin already created — no blockEngineUpdates from cleanup.
-    //
-    // --force-reauth is NOT used: it causes tailscale up to exit ~4s after NeedsLogin is
-    // reached (not after Running), defeating --timeout=60s. With a clean statedir there is
-    // no stale node key to clear — the provided --authkey is always used for a fresh login.
+    // tailscale up with --authkey exits ~4s after prefs are ACKed (not after Running).
+    // This is fine in server mode: b.Start() is NOT called on client disconnect, so
+    // doLogin continues in the background after the CLI exits. Our post-up polling loop
+    // (below) waits up to 75s for BackendState=Running.
     //
     // NO_PROXY=* (set on daemon env) skips WinHTTP proxy detection that stalls doLogin.
     let _ = app.emit("connect-debug",

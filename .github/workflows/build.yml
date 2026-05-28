@@ -118,13 +118,12 @@ jobs:
           # With serverMode=true: client disconnects do NOT reset WantRunning. doLogin runs
           # to completion after tailscale up exits, transitions to Running state.
           #
-          # Fix: find the local `serverMode` variable declaration inside Start() and force
-          # it to true. ipn.Options.ServerMode field does not exist in v1.98.2 — the local
-          # var is set from prefs or some other source. We replace ANY `serverMode :=` decl
-          # inside the file (only one exists, inside Start()) with `serverMode := true`.
-          # Impact: daemon maintains connections independently of IPN client lifetime.
-          # This is correct for our isolated daemon — we control its lifecycle directly
-          # (kill on app exit / on explicit disconnect), so serverMode=true is safe.
+          # Fix: in v1.98.2, the variable is 'inServerMode := prefs.ForceDaemon()'.
+          # ForceDaemon() returns false (user hasn't set it), so inServerMode=false even
+          # though 'runtime.GOOS == "windows"' makes the block always execute on Windows.
+          # With inServerMode=false, WantRunning is still reset to false on CLI disconnect.
+          # Force inServerMode := true so doLogin runs to completion after tailscale up exits.
+          # Safe for our isolated daemon — we control lifecycle directly (kill on app exit).
           $ipnlocal = "tailscale-src\ipn\ipnlocal\local.go"
           if (-not (Test-Path $ipnlocal)) {
             Write-Error "ipnlocal/local.go not found — check Tailscale source layout"; exit 1
@@ -132,22 +131,22 @@ jobs:
           $src = [System.IO.File]::ReadAllText($ipnlocal)
           $patch3_applied = $false
 
-          # Strategy A: replace any 'serverMode := <expr>' declaration
-          $replA = '${1}true // NodePulse patch 3: force server mode'
-          $new = $src -replace '(?m)([ \t]+serverMode\s*:=\s*)(?!true\b)[^\r\n]*', $replA
+          # Strategy A: target 'inServerMode := prefs.ForceDaemon()' — the exact pattern
+          # in v1.98.2. Force it to true so WantRunning is NOT reset on CLI disconnect.
+          $new = $src -replace 'inServerMode\s*:=\s*prefs\.ForceDaemon\(\)', 'inServerMode := true // NodePulse patch 3: force server mode'
           if ($new -ne $src) {
             [System.IO.File]::WriteAllText($ipnlocal, $new)
-            Write-Host "Patch 3 applied (strategy A): serverMode := <expr> -> true"
+            Write-Host "Patch 3 applied (strategy A): inServerMode := prefs.ForceDaemon() -> true"
             $patch3_applied = $true
           }
 
-          # Strategy B: 'var serverMode bool' declaration — insert assignment after it
+          # Strategy B: broader — any 'inServerMode := <non-true expr>' declaration
           if (-not $patch3_applied) {
-            $replB = '$1' + "`n`t`tserverMode = true // NodePulse patch 3: force server mode"
-            $new = $src -replace '(?m)([ \t]+var\s+serverMode\s+bool\b[^\r\n]*)', $replB
+            $replB = '${1}true // NodePulse patch 3: force server mode'
+            $new = $src -replace '(?m)([ \t]*if\s+inServerMode\s*:=\s*)(?!true\b)[^;]+', $replB
             if ($new -ne $src) {
               [System.IO.File]::WriteAllText($ipnlocal, $new)
-              Write-Host "Patch 3 applied (strategy B): var serverMode bool + forced assignment"
+              Write-Host "Patch 3 applied (strategy B): inServerMode := <expr> -> true"
               $patch3_applied = $true
             }
           }

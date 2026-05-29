@@ -126,11 +126,14 @@ jobs:
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        # Windows/macOS: merge externalBin sidecar config so bundled binaries are included.
         # Linux: no externalBin — Tailscale is downloaded by the app at first launch.
+        # macOS: externalBin only (tailscale/tailscaled from Homebrew).
+        # Windows: externalBin + wintun.dll resource (kernel-mode TUN driver).
         run: |
           if [[ "${{ matrix.platform }}" == "ubuntu-22.04" ]]; then
             npm run tauri build
+          elif [[ "${{ matrix.platform }}" == "windows-latest" ]]; then
+            npm run tauri build -- -c src-tauri/tauri-sidecar-extra.json -c src-tauri/tauri-windows-extra.json
           else
             npm run tauri build -- -c src-tauri/tauri-sidecar-extra.json
           fi

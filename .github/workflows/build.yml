@@ -243,6 +243,51 @@ jobs:
             }
           }
 
+          # Patch 5: Preserve WantRunning=true in server mode on IPN client disconnect.
+          #
+          # Root cause of remaining failure: when `tailscale up` exits, the IPN server
+          # calls b.Start(opts) where opts.WantRunning=false (empty opts from disconnect
+          # handler). Even with inServerMode=true (Patch 3), the code still applies
+          # opts.WantRunning=false to prefs, causing control.Shutdown() and NeedsLogin.
+          #
+          # Fix: inside the inServerMode block (already patched by Patch 3), AFTER the
+          # existing logf("serverMode=%v"...) line, inject code that overrides
+          # opts.WantRunning=true when serverMode is active and current prefs have
+          # WantRunning=true. This prevents the IPN server's disconnect cleanup from
+          # stopping the daemon's in-progress doLogin.
+          $patch5_applied = $false
+          $ipnlocal5 = "tailscale-src\ipn\ipnlocal\local.go"
+          if (-not (Test-Path $ipnlocal5)) {
+            Write-Host "Patch 5: local.go not found — skipping"
+          } else {
+            $src5 = [System.IO.File]::ReadAllText($ipnlocal5)
+
+            # Dump WantRunning-related lines for diagnostics
+            Write-Host "=== Patch 5: WantRunning+opts lines in local.go ==="
+            $src5.Split("`n") | Where-Object { $_ -match 'WantRunning' -and $_ -match 'opts' } | Select-Object -First 20 | ForEach-Object { Write-Host "  $_" }
+            Write-Host "=== Patch 5: WantRunning assignment lines ==="
+            $src5.Split("`n") | Where-Object { $_ -match 'WantRunning\s*=' -and $_ -notmatch '==' -and $_ -notmatch '//' } | Select-Object -First 20 | ForEach-Object { Write-Host "  $_" }
+
+            # Strategy A: insert WantRunning override inside the existing inServerMode block,
+            # right after the logf("serverMode=%v", inServerMode) line we know exists.
+            # This uses the anchor from our Patch 3 comment to reliably find the location.
+            $anchor = 'logf("serverMode=%v", inServerMode)'
+            if ($src5 -match [regex]::Escape($anchor)) {
+              $insert = "`n`t`tif inServerMode && !opts.WantRunning {`n`t`t`t// NodePulse patch 5: preserve WantRunning in server mode — IPN server sends`n`t`t`t// opts.WantRunning=false on client disconnect; we override to keep daemon running.`n`t`t`topts.WantRunning = b.pm.CurrentPrefs().WantRunning()`n`t`t}"
+              $new5 = $src5.Replace($anchor, $anchor + $insert)
+              if ($new5 -ne $src5) {
+                [System.IO.File]::WriteAllText($ipnlocal5, $new5)
+                Write-Host "Patch 5 applied (strategy A): WantRunning override inserted after serverMode logf"
+                $patch5_applied = $true
+              }
+            }
+
+            if (-not $patch5_applied) {
+              Write-Host "Patch 5: anchor not found — see WantRunning diagnostics above"
+              Write-Error "Patch 5 failed — WantRunning reset must be fixed"; exit 1
+            }
+          }
+
           New-Item -ItemType Directory -Force -Path src-tauri\binaries | Out-Null
           Push-Location tailscale-src
           go build -o "..\src-tauri\binaries\tailscaled-x86_64-pc-windows-msvc.exe" .\cmd\tailscaled

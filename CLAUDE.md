@@ -194,6 +194,7 @@ tar = "0.4"
 - **Windows joining mesh slow**: Inherent ke Windows userspace networking init. Max wait ~87s (15+10 iter × 3.5s) sebelum `tailscale up` 60s timeout. Biasanya selesai dalam 20-40 detik.
 
 ## Version History (recent)
+- **v0.3.50** — Fork Patch 6 (`resolveBestProfileLocked`): always return current profile on Windows — fix `doLogin` interrupted when CLI disconnects; empty profile switch was resetting WantRunning=false before doLogin could complete
 - **v0.3.44** — Patch tailscaled source in CI (build.yml Patch 3): force `serverMode=true` in `LocalBackend.Start()` — definitive fix for `b.Start(serverMode=false)` reset
 - **v0.3.43** — `tailscale set --unattended=true` attempt (flag exists, doesn't affect serverMode)
 - **v0.3.42** — `tailscale set --update-check=false` + remove NoState early bail; doLogin allowed to run full 75s window

@@ -6,6 +6,8 @@ use serde::{Deserialize, Serialize};
 // ── Daemon state ───────────────────────────────────────────────────────────────
 
 pub struct DaemonHandle {
+    // Windows: always None — daemon runs as Windows Service.
+    // Linux/macOS: child process handle.
     pub child: Mutex<Option<std::process::Child>>,
 }
 
@@ -13,6 +15,15 @@ impl DaemonHandle {
     pub fn new() -> Self { Self { child: Mutex::new(None) } }
 
     pub fn kill(&self) {
+        #[cfg(target_os = "windows")]
+        {
+            let _ = std::process::Command::new("sc")
+                .args(["stop", "NodePulseConnectDaemon"])
+                .output();
+            // Give SCM time to stop the service and release file/socket locks.
+            std::thread::sleep(std::time::Duration::from_millis(2500));
+        }
+        #[cfg(not(target_os = "windows"))]
         if let Ok(mut g) = self.child.lock() {
             if let Some(mut c) = g.take() {
                 let _ = c.kill();
@@ -78,6 +89,16 @@ fn bundled_bin(name: &str) -> PathBuf {
 // ── Shared paths ───────────────────────────────────────────────────────────────
 
 pub fn data_dir(app: &tauri::AppHandle) -> PathBuf {
+    // Windows: service runs as LocalSystem — statedir lives in ProgramData so
+    // both the service (SYSTEM) and the user app can access it.
+    #[cfg(target_os = "windows")]
+    {
+        let _ = app;
+        return PathBuf::from(
+            std::env::var("PROGRAMDATA").unwrap_or_else(|_| r"C:\ProgramData".to_string())
+        ).join("NodePulse Connect").join("tailscale-state");
+    }
+    #[cfg(not(target_os = "windows"))]
     app.path().app_data_dir().expect("app data dir").join("tailscale-state")
 }
 
@@ -91,11 +112,18 @@ pub fn socket_path(app: &tauri::AppHandle) -> String {
 
 // ── Socket readiness poll ──────────────────────────────────────────────────────
 
-/// Block until the daemon socket/pipe is ready, or 5 s elapsed.
+/// Block until the daemon socket/pipe is ready.
+/// Windows: service may take several seconds to start — allow up to ~18s.
+/// Linux/macOS: child process is faster — allow up to ~5s.
 fn wait_for_socket(socket: &str) {
-    for _ in 0..25 {
+    #[cfg(target_os = "windows")]
+    let (probes, interval_ms) = (60u32, 300u64);
+    #[cfg(not(target_os = "windows"))]
+    let (probes, interval_ms) = (25u32, 200u64);
+
+    for _ in 0..probes {
         if socket_is_ready(socket) { return; }
-        std::thread::sleep(std::time::Duration::from_millis(200));
+        std::thread::sleep(std::time::Duration::from_millis(interval_ms));
     }
 }
 
@@ -222,88 +250,102 @@ fn log_snippet(log: &str) -> String {
 
 // ── Daemon lifecycle ───────────────────────────────────────────────────────────
 
-/// Spawn tailscaled with isolated socket + userspace networking.
-/// Non-fatal — silently skips if binary not yet available or daemon already running.
+/// Windows: start the NodePulseConnectDaemon Windows service (installed by NSIS).
+/// The service runs as LocalSystem and uses WinTun for kernel-mode routing,
+/// giving the OS proper routes to 100.64.0.0/10 so browsers/SSH can reach mesh IPs.
+///
+/// Linux/macOS: spawn tailscaled as a child process with userspace networking.
 pub fn start_daemon(app: &tauri::AppHandle) {
-    let bin = tailscaled_bin(app);
-    if !bin.exists() {
-        return;
-    }
+    #[cfg(target_os = "windows")]
+    {
+        // Check if service is already running.
+        let running = std::process::Command::new("sc")
+            .args(["query", "NodePulseConnectDaemon"])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).contains("RUNNING"))
+            .unwrap_or(false);
+        if running { return; }
 
-    // Don't spawn a second daemon if one is still alive.
-    if let Ok(mut g) = app.state::<DaemonHandle>().child.lock() {
-        if let Some(c) = g.as_mut() {
-            match c.try_wait() {
-                Ok(None) => return, // process still running
-                _ => { *g = None; } // exited or error — fall through to respawn
-            }
-        }
-    }
+        let _ = std::process::Command::new("sc")
+            .args(["start", "NodePulseConnectDaemon"])
+            .output();
 
-    let state_dir = data_dir(app);
-    let _ = std::fs::create_dir_all(&state_dir);
-    let socket = socket_path(app);
+        let socket = socket_path(app);
+        wait_for_socket(&socket);
+    }
 
     #[cfg(not(target_os = "windows"))]
     {
-        let sock = PathBuf::from(&socket);
-        if sock.exists() { let _ = std::fs::remove_file(&sock); }
-    }
-
-    // Redirect output to log file so we can diagnose failures.
-    let log_path = daemon_log_path(app);
-    let log_file = std::fs::OpenOptions::new()
-        .create(true).write(true).truncate(true)
-        .open(&log_path);
-
-    let (stdout_s, stderr_s) = match log_file {
-        Ok(f) => {
-            let f2 = f.try_clone()
-                .or_else(|_| std::fs::OpenOptions::new().append(true).open(&log_path))
-                .ok();
-            let stderr = f2.map(std::process::Stdio::from)
-                .unwrap_or_else(std::process::Stdio::null);
-            (std::process::Stdio::from(f), stderr)
+        let bin = tailscaled_bin(app);
+        if !bin.exists() {
+            return;
         }
-        Err(_) => (std::process::Stdio::null(), std::process::Stdio::null()),
-    };
 
-    // Use an explicit file path inside statedir instead of --state mem:.
-    // With mem:, when the `tailscale up` CLI disconnects the daemon calls profileDirFor()
-    // to clean up, but the in-memory profile map races and the profile is "not found" →
-    // blockEngineUpdates(true) → stuck. With a file-based state the profile is written to
-    // disk before the CLI exits, so profileDirFor() always finds it.
-    // We avoid Windows registry pollution by using an explicit path (not --state auto:).
-    // The state file lives inside statedir, so wiping statedir always starts fresh.
-    let state_file = state_dir.join("tailscale.state");
-    let state_file_str = state_file.to_str().unwrap_or("").to_string();
-
-    match std::process::Command::new(&bin)
-        .args([
-            "--tun=userspace-networking",
-            "--socket", &socket,
-            "--statedir", state_dir.to_str().unwrap_or(""),
-            "--state", &state_file_str,
-        ])
-        // Skip WinHTTP proxy detection: it blocks for several seconds before timing out,
-        // delaying doLogin long enough for the CLI to disconnect first, which then triggers
-        // the profileDirFor cleanup. NO_PROXY=* makes Tailscale skip WinHTTP entirely.
-        .env("NO_PROXY", "*")
-        .env("no_proxy", "*")
-        .stdout(stdout_s)
-        .stderr(stderr_s)
-        .spawn()
-    {
-        Ok(child) => {
-            // Poll until daemon socket is ready — Windows named pipes take longer than Unix sockets.
-            wait_for_socket(&socket);
-            if let Ok(mut g) = app.state::<DaemonHandle>().child.lock() {
-                *g = Some(child);
+        // Don't spawn a second daemon if one is still alive.
+        if let Ok(mut g) = app.state::<DaemonHandle>().child.lock() {
+            if let Some(c) = g.as_mut() {
+                match c.try_wait() {
+                    Ok(None) => return, // process still running
+                    _ => { *g = None; } // exited or error — fall through to respawn
+                }
             }
         }
-        Err(e) => {
-            let _ = std::fs::write(daemon_log_path(app), format!("daemon spawn failed: {e}"));
-            eprintln!("[tailscale] daemon spawn failed: {e}");
+
+        let state_dir = data_dir(app);
+        let _ = std::fs::create_dir_all(&state_dir);
+        let socket = socket_path(app);
+
+        // Remove stale socket file before spawning.
+        let sock = PathBuf::from(&socket);
+        if sock.exists() { let _ = std::fs::remove_file(&sock); }
+
+        // Redirect output to log file so we can diagnose failures.
+        let log_path = daemon_log_path(app);
+        let log_file = std::fs::OpenOptions::new()
+            .create(true).write(true).truncate(true)
+            .open(&log_path);
+
+        let (stdout_s, stderr_s) = match log_file {
+            Ok(f) => {
+                let f2 = f.try_clone()
+                    .or_else(|_| std::fs::OpenOptions::new().append(true).open(&log_path))
+                    .ok();
+                let stderr = f2.map(std::process::Stdio::from)
+                    .unwrap_or_else(std::process::Stdio::null);
+                (std::process::Stdio::from(f), stderr)
+            }
+            Err(_) => (std::process::Stdio::null(), std::process::Stdio::null()),
+        };
+
+        // Use file-based state. With mem: the profile dir cleanup races on CLI exit.
+        // With a file-based state the profile is written to disk before the CLI exits.
+        let state_file = state_dir.join("tailscale.state");
+        let state_file_str = state_file.to_str().unwrap_or("").to_string();
+
+        match std::process::Command::new(&bin)
+            .args([
+                "--tun=userspace-networking",
+                "--socket", &socket,
+                "--statedir", state_dir.to_str().unwrap_or(""),
+                "--state", &state_file_str,
+            ])
+            // Skip WinHTTP proxy detection on macOS/Linux (no-op but harmless).
+            .env("NO_PROXY", "*")
+            .env("no_proxy", "*")
+            .stdout(stdout_s)
+            .stderr(stderr_s)
+            .spawn()
+        {
+            Ok(child) => {
+                wait_for_socket(&socket);
+                if let Ok(mut g) = app.state::<DaemonHandle>().child.lock() {
+                    *g = Some(child);
+                }
+            }
+            Err(e) => {
+                let _ = std::fs::write(daemon_log_path(app), format!("daemon spawn failed: {e}"));
+                eprintln!("[tailscale] daemon spawn failed: {e}");
+            }
         }
     }
 }
@@ -313,16 +355,25 @@ pub fn get_daemon_log(app: tauri::AppHandle) -> String {
     read_daemon_log(&app)
 }
 
-// Kill the daemon process — called before update install so the NSIS extractor
-// can overwrite tailscaled.exe (which it holds a file lock on while running).
+// Kill the daemon process / stop the service — called before update install so
+// the NSIS extractor can overwrite tailscaled.exe.
 #[tauri::command]
 pub fn stop_daemon(app: tauri::AppHandle) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        let _ = app;
+        let _ = std::process::Command::new("sc")
+            .args(["stop", "NodePulseConnectDaemon"])
+            .output();
+        std::thread::sleep(std::time::Duration::from_millis(3000));
+    }
+    #[cfg(not(target_os = "windows"))]
     app.state::<DaemonHandle>().kill();
     Ok(())
 }
 
-// Start the daemon — called from frontend AFTER the startup update check
-// completes, so tailscaled.exe is never running when an update installs.
+// Start the daemon / service — called from frontend AFTER the startup update
+// check completes, so the binary is never locked when an update installs.
 #[tauri::command]
 pub fn launch_daemon(app: tauri::AppHandle) -> Result<(), String> {
     start_daemon(&app);
@@ -374,9 +425,7 @@ pub async fn tailscale_status(app: tauri::AppHandle) -> Result<TailscaleStatus, 
 }
 
 /// Poll `tailscale status` until the daemon responds (or we run out of iterations).
-/// Unlike socket_is_ready, this verifies the daemon can actually process IPC — not just
-/// that a named pipe file exists. Each probe has a 3 s hard timeout so a slow daemon
-/// cannot inflate the total wait indefinitely.
+/// Each probe has a 3 s hard timeout so a slow daemon cannot inflate the total wait.
 async fn daemon_can_respond(app: &tauri::AppHandle, max_iter: usize) -> bool {
     for _ in 0..max_iter {
         let probe = tokio::time::timeout(
@@ -390,7 +439,7 @@ async fn daemon_can_respond(app: &tauri::AppHandle, max_iter: usize) -> bool {
                     return true;
                 }
             }
-            _ => {} // timeout or error — keep waiting
+            _ => {}
         }
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     }
@@ -406,31 +455,22 @@ pub async fn tailscale_up(
 ) -> Result<String, String> {
     let socket = socket_path(&app);
 
-    // Kill daemon + wipe statedir + restart fresh before every connect attempt.
+    // Stop daemon/service + wipe statedir + restart fresh before every connect attempt.
     //
     // WHY WIPE: If tailscale.state exists from a previous session with WantRunning=true,
-    // the daemon reads it on startup and immediately runs an authRoutine to auto-reconnect.
-    // Since no IPN client is connected yet, WantRunning transitions to false and the
-    // authRoutine exits. But before exiting, the NoState→NeedsLogin transition calls
-    // blockEngineUpdates(true) — which is never reset (no successful doLogin occurred).
-    // By the time `tailscale up` runs, blockEngineUpdates is already true, so even a
-    // successful auth exchange can't transition the state to Running.
+    // the daemon reads it on startup and may enter a blockEngineUpdates state.
+    // With a clean statedir the daemon starts in pure NoState with no auto-init.
     //
-    // With a clean statedir the daemon starts in pure NoState with no saved prefs,
-    // no auto-init, and no blockEngineUpdates at startup. The first blockEngineUpdates(true)
-    // happens when `tailscale up` causes the NoState→NeedsLogin transition — and it gets
-    // reset to false by Tailscale's resetForProfileChange() when doLogin succeeds.
-    //
-    // WHY NO --force-reauth (see below): removing it lets `tailscale up --timeout=60s`
-    // actually wait 60s for Running. With a clean statedir there is no stale node key to
-    // force-clear, so --force-reauth is unnecessary.
+    // Windows: kill() stops the service via SCM; statedir is in ProgramData and
+    // the user process has write access (granted by NSIS icacls during installation).
     let _ = app.emit("connect-debug", "[rust] killing daemon…");
     app.state::<DaemonHandle>().kill();
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
     let state_dir = data_dir(&app);
-    // Wipe statedir so daemon has no saved WantRunning=true to auto-init from.
     let _ = std::fs::remove_dir_all(&state_dir);
     let _ = std::fs::create_dir_all(&state_dir);
+
     let _ = app.emit("connect-debug", "[rust] starting fresh daemon…");
     start_daemon(&app);
 
@@ -443,14 +483,12 @@ pub async fn tailscale_up(
         return Err(format!("Tailscale daemon failed to start.\n{detail}"));
     }
 
-    // With the patched tailscaled binary (serverMode always true), b.Start() no longer
-    // resets WantRunning when an IPN client (tailscale up CLI) disconnects. doLogin runs
-    // to completion after tailscale up exits. A brief settle delay lets the daemon reach
-    // stable NeedsLogin state before we send prefs.
+    // With the patched tailscaled binary (serverMode always true + Patch 6 profile fix),
+    // b.Start() no longer resets WantRunning when an IPN client disconnects and
+    // the profile switch to empty is prevented. doLogin runs to completion.
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
-    // Poll until BackendState exits NoState — with clean statedir this is always NoState
-    // until tailscale up sends prefs, but we keep it for robustness / diagnostics.
+    // Poll until BackendState exits NoState.
     for i in 0..20u8 {
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         let probe = run_ts(&app, &["status", "--json"]).await;
@@ -465,15 +503,6 @@ pub async fn tailscale_up(
         }
     }
 
-    // tailscale up with --timeout=60s: keeps the IPN client connection alive while
-    // the profile data directory is being written to disk (created by Patch 4 MkdirAll,
-    // but the stat check in profileDataDir() must see it before CLI exits).
-    // Without a live IPN client, b.Start() is called by the IPN server immediately on
-    // disconnect, and the profile dir may not exist yet → WantRunning=false.
-    // doLogin continues after the CLI exits (serverMode=true via Patch 3).
-    // Our post-up polling loop waits up to 75s for BackendState=Running.
-    //
-    // NO_PROXY=* (set on daemon env) skips WinHTTP proxy detection that stalls doLogin.
     let _ = app.emit("connect-debug",
         format!("[rust] tailscale up --login-server {} --hostname {} --timeout=60s", login_server, hostname));
 
@@ -493,7 +522,7 @@ pub async fn tailscale_up(
 
     let out = match up_result {
         Err(_) => {
-            let _ = app.emit("connect-debug", "[rust] tailscale up timed out after 15s");
+            let _ = app.emit("connect-debug", "[rust] tailscale up timed out after 75s");
             let log = read_daemon_log(&app);
             return Err(format!("tailscale up prefs send timed out.\nDaemon log:\n{}", log_snippet(&log)));
         }
@@ -516,8 +545,7 @@ pub async fn tailscale_up(
         return Err(msg);
     }
 
-    // tailscale up sent prefs — now poll until the daemon reaches Running state.
-    // The daemon handles doLogin independently; we wait up to 75s for it to connect.
+    // tailscale up sent prefs — poll until daemon reaches Running state (up to 75s).
     let _ = app.emit("connect-debug", "[rust] prefs sent — polling for Running state (75s)…");
     for i in 1u32..=25 {
         tokio::time::sleep(std::time::Duration::from_secs(3)).await;
@@ -535,10 +563,6 @@ pub async fn tailscale_up(
             let _ = app.emit("connect-debug", "[rust] connected!");
             return Ok("Connected".to_string());
         }
-        // Bail on Stopped (WantRunning=false, connection explicitly rejected).
-        // Do NOT bail on NoState — after the settle cycle, doLogin runs after tailscale up
-        // exits and can take 20-60s before transitioning away from NoState. The old
-        // "bail after 18s of NoState" caused premature abort while doLogin was still active.
         if state == "Stopped" {
             let log = read_daemon_log(&app);
             let snip = log_snippet(&log);
@@ -558,8 +582,8 @@ pub async fn tailscale_up(
 
 #[tauri::command]
 pub async fn tailscale_down(app: tauri::AppHandle) -> Result<(), String> {
-    // With serverMode=true (patched binary), tailscale down sets WantRunning=false and
-    // the daemon stops routing. Next connection attempt kills+restarts the daemon anyway.
+    // With serverMode=true (patched binary), tailscale down sets WantRunning=false
+    // and the daemon stops routing. Next connection attempt kills+restarts anyway.
     let _ = run_ts(&app, &["down"]).await;
     Ok(())
 }

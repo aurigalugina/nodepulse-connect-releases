@@ -3,6 +3,9 @@
     "externalBin": [
       "binaries/tailscaled",
       "binaries/tailscale"
-    ]
+    ],
+    "resources": {
+      "binaries/wintun.dll": "wintun.dll"
+    }
   }
 }

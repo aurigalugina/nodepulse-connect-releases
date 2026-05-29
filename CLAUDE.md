@@ -134,40 +134,66 @@ Utility classes: `.np-input`, `.np-btn-primary`, `.np-btn-ghost`, `.np-btn-dange
 | `set_tray_connected` | async | Update tray icon state |
 | `get_device_identity` | async | Return `{ machine_id, mac_address }` — fire-and-forget setelah CONNECTED |
 
-## Isolated Tailscale Daemon (v0.3.0+, revised v0.3.3+)
+## Isolated Tailscale Daemon (v0.3.0+, kernel mode Windows v0.3.51+)
 
-Tailscale berjalan sebagai daemon terpisah dari system Tailscale:
+Tailscale berjalan terpisah dari system Tailscale. Socket dan statedir fully isolated.
 
 ```
-tailscaled --tun=userspace-networking --socket=<isolated> --statedir=<AppData>/tailscale-state
-tailscale   --socket=<isolated> up/status/logout ...
+# Windows (kernel mode, via Windows Service):
+tailscaled --socket \\.\pipe\NodePulseConnect-tailscaled
+           --statedir "C:\ProgramData\NodePulse Connect\tailscale-state"
+           --state   "C:\ProgramData\NodePulse Connect\tailscale-state\tailscale.state"
+# (NO --tun=userspace-networking → WinTun kernel driver → OS routing table populated)
+
+# macOS / Linux (userspace, child process):
+tailscaled --tun=userspace-networking --socket=<AppData>/tailscale-state/tailscaled.sock
+           --statedir=<AppData>/tailscale-state
 ```
 
 ### Binary Paths
 
 | Platform | Path binary |
 |---|---|
-| Windows | Next to main exe: `C:\Program Files\NodePulse Connect\tailscaled.exe` |
+| Windows | `$INSTDIR\tailscaled.exe` (next to app exe, run by Windows Service as SYSTEM) |
 | macOS | Next to main exe: `/Applications/NodePulse Connect.app/Contents/MacOS/tailscaled` |
 | Linux | `~/.local/share/id.ussi.nodepulse-connect/tailscale-bin/tailscaled` |
 
 ### Socket Paths
 | Platform | Socket |
 |---|---|
-| Windows | `<AppData>\id.ussi.nodepulse-connect\tailscale-state\tailscaled.sock` (AF_UNIX — not named pipe) |
+| Windows | `\\.\pipe\NodePulseConnect-tailscaled` (named pipe, created by SYSTEM service) |
 | macOS/Linux | `<AppData>/id.ussi.nodepulse-connect/tailscale-state/tailscaled.sock` |
 
-> **Why not named pipe on Windows**: `\\.\pipe\...` paths cause `ERROR_INVALID_OWNER` (1307) in
-> Tailscale's `safesocket.Listen` — it sets an explicit owner SID that restricted user tokens
-> cannot claim. AF_UNIX file sockets (Windows 10 1803+) avoid this entirely.
+### Statedir Paths
+| Platform | Statedir |
+|---|---|
+| Windows | `C:\ProgramData\NodePulse Connect\tailscale-state\` (accessible by SYSTEM + Users) |
+| macOS/Linux | `<AppData>/id.ussi.nodepulse-connect/tailscale-state/` |
 
-### Daemon Lifecycle
-1. App startup → `start_daemon()` di `lib.rs` setup (noop jika binary belum ada)
-2. `start_daemon` log output ke `<statedir>/tailscaled.log`
-3. Setelah spawn, `wait_for_socket()` poll 25× @ 200ms (max 5 detik) sampai socket ready
-4. `tailscale_up` cek `socket_is_ready` sebelum jalan — jika tidak ready, coba restart daemon
-5. Jika masih tidak ready, return error + tail dari `tailscaled.log`
-6. App exit → `DaemonHandle::kill()` membersihkan proses
+### Windows Service Architecture (v0.3.51+)
+- **Service name:** `NodePulseConnectDaemon`
+- **Account:** `LocalSystem` — has `SeLoadDriverPrivilege` needed to load WinTun kernel driver
+- **Start type:** demand (on-demand, started by Tauri app via `sc start`)
+- **wintun.dll:** placed next to `tailscaled.exe` in `$INSTDIR`, loaded at service start
+- **Effect:** Windows routing table gets `100.64.0.0/10 → WinTun` — browser/SSH can reach mesh IPs directly without SOCKS5 proxy
+- **SDDL:** Authenticated Users granted start/stop/query — no admin needed at runtime
+- **Installation:** NSIS POSTINSTALL hook (runs as admin) installs service + sets permissions + sets NO_PROXY env via registry
+
+### Daemon Lifecycle (Windows)
+1. User clicks Connect → `tailscale_up` → `DaemonHandle::kill()` → `sc stop` (stop old service)
+2. Wipe statedir (`C:\ProgramData\NodePulse Connect\tailscale-state\`)
+3. `start_daemon()` → `sc start NodePulseConnectDaemon`
+4. `wait_for_socket()` poll 60× @ 300ms (max 18s) sampai named pipe ready
+5. `daemon_can_respond()` verify IPC live
+6. `tailscale up --authkey ... --timeout=60s` via named pipe
+7. Poll 75s for BackendState=Running → Connected
+8. Disconnect → `tailscale down` (WantRunning=false, service tetap running)
+
+### Daemon Lifecycle (macOS/Linux)
+1. App startup → `start_daemon()` spawn child process (noop jika binary belum ada)
+2. Log output ke `<statedir>/tailscaled.log`
+3. `wait_for_socket()` poll 25× @ 200ms (max 5s)
+4. App exit → `DaemonHandle::kill()` membersihkan child process
 
 ### Error UX (v0.3.4+)
 - Jika koneksi gagal: **tetap di Connecting screen** (tidak balik ke ClusterSelect)
@@ -191,9 +217,10 @@ tar = "0.4"
 ```
 
 ## Known Issues / Under Investigation
-- **Windows joining mesh slow**: Inherent ke Windows userspace networking init. Max wait ~87s (15+10 iter × 3.5s) sebelum `tailscale up` 60s timeout. Biasanya selesai dalam 20-40 detik.
+- **Windows joining mesh slow**: Dengan kernel mode (WinTun), biasanya 5-15 detik. Service start + WinTun adapter init + WireGuard handshake. Max wait: service 18s + IPC 15 probes + polling 75s.
 
 ## Version History (recent)
+- **v0.3.51** — Windows kernel mode via Windows Service: tailscaled installed as `NodePulseConnectDaemon` (LocalSystem, WinTun), statedir moved to ProgramData, OS routing table populated so browser/SSH can reach 100.64.x.x mesh IPs directly
 - **v0.3.50** — Fork Patch 6 (`resolveBestProfileLocked`): always return current profile on Windows — fix `doLogin` interrupted when CLI disconnects; empty profile switch was resetting WantRunning=false before doLogin could complete
 - **v0.3.44** — Patch tailscaled source in CI (build.yml Patch 3): force `serverMode=true` in `LocalBackend.Start()` — definitive fix for `b.Start(serverMode=false)` reset
 - **v0.3.43** — `tailscale set --unattended=true` attempt (flag exists, doesn't affect serverMode)

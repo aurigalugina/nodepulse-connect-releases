@@ -91,12 +91,23 @@ jobs:
           Pop-Location
           Remove-Item tailscale-src -Recurse -Force
 
+          # Download WinTun driver DLL (kernel-mode TUN — required for OS-level mesh routing)
+          # tailscaled loads wintun.dll from its own directory at startup.
+          $WinTunUrl = "https://www.wintun.net/builds/wintun-0.14.1.zip"
+          Invoke-WebRequest -Uri $WinTunUrl -OutFile wintun.zip -UseBasicParsing
+          Expand-Archive -Path wintun.zip -DestinationPath wintun-tmp -Force
+          Copy-Item "wintun-tmp\wintun\bin\amd64\wintun.dll" "src-tauri\binaries\wintun.dll"
+          Remove-Item wintun.zip, wintun-tmp -Recurse -Force
+
           # Verify binaries exist before Tauri build
           if (-not (Test-Path "src-tauri\binaries\tailscaled-x86_64-pc-windows-msvc.exe")) {
             Write-Error "tailscaled binary not found after build — aborting"; exit 1
           }
           if (-not (Test-Path "src-tauri\binaries\tailscale-x86_64-pc-windows-msvc.exe")) {
             Write-Error "tailscale binary not found after build — aborting"; exit 1
+          }
+          if (-not (Test-Path "src-tauri\binaries\wintun.dll")) {
+            Write-Error "wintun.dll not found after download — aborting"; exit 1
           }
           Write-Host "Binaries verified OK"
 

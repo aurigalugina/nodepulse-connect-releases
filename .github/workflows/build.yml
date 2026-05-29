@@ -181,7 +181,9 @@ jobs:
           # This lets the profile manager load prefs from the state store (WantRunning=true)
           # rather than falling back to empty defaults.
           $patch4_applied = $false
-          $profileMsg = 'profile data directory: profile not found'
+          # NOTE: source uses logf("profile data directory: %v", err) — the "%v" is the
+          # format string, NOT the literal "profile not found". Search for the format string.
+          $profileMsg = 'profile data directory: %v'
           $patch4File = $null
 
           Get-ChildItem tailscale-src -Recurse -Filter "*.go" | ForEach-Object {

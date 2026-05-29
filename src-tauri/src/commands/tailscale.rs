@@ -465,21 +465,20 @@ pub async fn tailscale_up(
         }
     }
 
-    // tailscale up WITHOUT --timeout: exits ~1-2s after prefs are ACKed by the daemon.
-    // This prevents the --timeout=60s cleanup path in the CLI, which sends WantRunning=false
-    // (via c.Down()) when BackendState hasn't reached Running by the time the CLI exits.
-    // With Patch 4 (MkdirAll in source), the profile data directory is always created
-    // before b.Start() checks for it, so the dir-not-written race is gone — meaning
-    // we no longer need the CLI to stay alive for the dir to be written to disk.
-    // doLogin continues in the background after the CLI exits (serverMode=true).
+    // tailscale up with --timeout=60s: keeps the IPN client connection alive while
+    // the profile data directory is being written to disk (created by Patch 4 MkdirAll,
+    // but the stat check in profileDataDir() must see it before CLI exits).
+    // Without a live IPN client, b.Start() is called by the IPN server immediately on
+    // disconnect, and the profile dir may not exist yet → WantRunning=false.
+    // doLogin continues after the CLI exits (serverMode=true via Patch 3).
     // Our post-up polling loop waits up to 75s for BackendState=Running.
     //
     // NO_PROXY=* (set on daemon env) skips WinHTTP proxy detection that stalls doLogin.
     let _ = app.emit("connect-debug",
-        format!("[rust] tailscale up --login-server {} --hostname {}", login_server, hostname));
+        format!("[rust] tailscale up --login-server {} --hostname {} --timeout=60s", login_server, hostname));
 
     let up_result = tokio::time::timeout(
-        std::time::Duration::from_secs(30),
+        std::time::Duration::from_secs(75),
         tokio::process::Command::new(tailscale_bin(&app))
             .args([
                 "--socket",        &socket,
@@ -487,6 +486,7 @@ pub async fn tailscale_up(
                 "--login-server",  &login_server,
                 "--authkey",       &authkey,
                 "--hostname",      &hostname,
+                "--timeout",       "60s",
             ])
             .output(),
     ).await;

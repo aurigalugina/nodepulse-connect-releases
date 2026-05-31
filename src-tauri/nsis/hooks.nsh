@@ -67,8 +67,9 @@
     "$\"$INSTDIR\tailscaled.exe$\" --socket \\.\pipe\NodePulseConnect-tailscaled --statedir $\"C:\ProgramData\NodePulse Connect\tailscale-state$\" --state $\"C:\ProgramData\NodePulse Connect\tailscale-state\tailscale.state$\""
 
   ; NO_PROXY: skip WinHTTP proxy detection that stalls doLogin on corporate networks.
-  WriteRegMultiStr HKLM "SYSTEM\CurrentControlSet\Services\NodePulseConnectDaemon" \
-                   "Environment" "NO_PROXY=*$\0no_proxy=*$\0"
+  ; WriteRegMultiStr requires /REGEDIT5 hex format — use PowerShell instead.
+  nsExec::Exec "powershell -NonInteractive -Command $\"Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\NodePulseConnectDaemon' -Name Environment -Value @('NO_PROXY=*','no_proxy=*') -Type MultiString$\""
+  Pop $0
 
   ; Grant Authenticated Users start/stop/query — no admin needed at runtime.
   ; SDDL: SY=SYSTEM full, BA=Admins full, AU=AuthUsers start+stop+query

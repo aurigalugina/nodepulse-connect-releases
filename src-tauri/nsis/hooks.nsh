@@ -2,7 +2,7 @@
 
 !macro NSIS_HOOK_PREINSTALL
   ; Stop service and kill processes BEFORE extraction so NSIS can overwrite
-  ; tailscaled.exe (which the service/process holds a file lock on).
+  ; tailscaled.exe (which the service holds a file lock on).
   nsExec::Exec 'sc.exe stop "NodePulseConnectDaemon"'
   Pop $0
   Sleep 2500
@@ -15,7 +15,6 @@
 
 !macro NSIS_HOOK_POSTINSTALL
   ; ── Firewall rules ──────────────────────────────────────────────────────────
-  ; Allow tailscaled.exe in/out so WireGuard UDP and DERP relay work.
   nsExec::Exec 'netsh advfirewall firewall delete rule name="NodePulse Connect - Tailscale"'
   Pop $0
   nsExec::Exec 'netsh advfirewall firewall add rule name="NodePulse Connect - Tailscale" dir=out action=allow program="$INSTDIR\tailscaled.exe" enable=yes'
@@ -23,58 +22,61 @@
   nsExec::Exec 'netsh advfirewall firewall add rule name="NodePulse Connect - Tailscale" dir=in action=allow program="$INSTDIR\tailscaled.exe" enable=yes'
   Pop $0
 
-  ; ── Copy wintun.dll to install dir ─────────────────────────────────────────
-  ; wintun.dll ships as a bundle resource (placed in $INSTDIR\resources\).
-  ; tailscaled loads it from its own directory at startup.
-  CopyFiles "$INSTDIR\resources\wintun.dll" "$INSTDIR\wintun.dll"
+  ; ── wintun.dll ──────────────────────────────────────────────────────────────
+  ; Tauri v2 NSIS places bundle resources under $INSTDIR\resources\.
+  ; tailscaled loads wintun.dll from its own directory, so copy it there.
+  IfFileExists "$INSTDIR\resources\wintun.dll" 0 wintun_already_in_place
+    CopyFiles "$INSTDIR\resources\wintun.dll" "$INSTDIR\wintun.dll"
+  wintun_already_in_place:
 
-  ; ── Windows Service setup ───────────────────────────────────────────────────
-  ; Write a PowerShell script to a temp file — avoids NSIS quoting hell.
-  ; The script creates the NodePulseConnectDaemon service with correct args,
-  ; sets permissions so regular users can start/stop it, and sets NO_PROXY.
-
-  FileOpen $9 "$TEMP\np-svc-setup.ps1" w
-  FileWrite $9 "param([string]$$instDir)$\n"
-  FileWrite $9 "$$dataDir = 'C:\ProgramData\NodePulse Connect\tailscale-state'$\n"
-  FileWrite $9 "$\n"
-  FileWrite $9 "# Create statedir and grant SYSTEM + Users full access$\n"
-  FileWrite $9 "New-Item -ItemType Directory -Force -Path $$dataDir | Out-Null$\n"
-  FileWrite $9 "& icacls $$dataDir /grant 'NT AUTHORITY\SYSTEM:(OI)(CI)F' /grant 'BUILTIN\Users:(OI)(CI)F' /T | Out-Null$\n"
-  FileWrite $9 "$\n"
-  FileWrite $9 "# Remove existing service (idempotent — safe to fail on first install)$\n"
-  FileWrite $9 "& sc.exe stop 'NodePulseConnectDaemon' 2>&1 | Out-Null$\n"
-  FileWrite $9 "Start-Sleep -Seconds 1$\n"
-  FileWrite $9 "& sc.exe delete 'NodePulseConnectDaemon' 2>&1 | Out-Null$\n"
-  FileWrite $9 "Start-Sleep -Seconds 1$\n"
-  FileWrite $9 "$\n"
-  FileWrite $9 "# Build binPath: binary must be double-quoted separately from its args$\n"
-  ; The binPath line uses PS string concatenation to avoid nested quoting:
-  ; result: '"C:\...\tailscaled.exe" --socket \\.\pipe\... --statedir "..." --state "..."'
-  FileWrite $9 "$$bp = ('$\"' + $$instDir + '\tailscaled.exe$\"' +$\n"
-  FileWrite $9 "        ' --socket \\.\pipe\NodePulseConnect-tailscaled' +$\n"
-  FileWrite $9 "        ' --statedir $\"' + $$dataDir + '$\"' +$\n"
-  FileWrite $9 "        ' --state $\"' + $$dataDir + '\tailscale.state$\"')$\n"
-  FileWrite $9 "$\n"
-  FileWrite $9 "& sc.exe create 'NodePulseConnectDaemon' binPath= $$bp start= demand obj= LocalSystem DisplayName= 'NodePulse Connect Daemon'$\n"
-  FileWrite $9 "$\n"
-  FileWrite $9 "# Allow Authenticated Users to start/stop/query the service (no admin needed)$\n"
-  FileWrite $9 "# SDDL breakdown: SY=SYSTEM full, BA=Admins full, AU=AuthUsers start+stop+query$\n"
-  FileWrite $9 "& sc.exe sdset 'NodePulseConnectDaemon' 'D:(A;;CCLCSWRPWPDTLOCRRC;;;SY)(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;BA)(A;;CCLCSWRPLO;;;AU)'$\n"
-  FileWrite $9 "$\n"
-  FileWrite $9 "# Set NO_PROXY so the daemon skips WinHTTP proxy detection (avoids stalling doLogin)$\n"
-  FileWrite $9 "Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\NodePulseConnectDaemon' ``$\n"
-  FileWrite $9 "    -Name Environment -Value @('NO_PROXY=*', 'no_proxy=*') -Type MultiString$\n"
-  FileWrite $9 "$\n"
-  FileWrite $9 "Write-Host 'NodePulseConnectDaemon service installed successfully.'$\n"
-  FileClose $9
-
-  nsExec::ExecToLog 'powershell.exe -NonInteractive -ExecutionPolicy Bypass -File "$TEMP\np-svc-setup.ps1" -instDir "$INSTDIR"'
+  ; ── Statedir ────────────────────────────────────────────────────────────────
+  ; Create statedir and grant Users full access so the user-mode app can wipe
+  ; it on each connect attempt (SYSTEM service writes here, user app reads/wipes).
+  CreateDirectory "C:\ProgramData\NodePulse Connect"
+  CreateDirectory "C:\ProgramData\NodePulse Connect\tailscale-state"
+  nsExec::Exec 'icacls "C:\ProgramData\NodePulse Connect" /grant "BUILTIN\Users:(OI)(CI)F" /T /Q'
   Pop $0
-  Delete "$TEMP\np-svc-setup.ps1"
+
+  ; ── Windows Service ─────────────────────────────────────────────────────────
+  ; Remove existing service first (idempotent — safe to fail on first install).
+  nsExec::Exec 'sc.exe stop "NodePulseConnectDaemon"'
+  Pop $0
+  Sleep 1500
+  nsExec::Exec 'sc.exe delete "NodePulseConnectDaemon"'
+  Pop $0
+  Sleep 1000
+
+  ; Write service registry entries directly — avoids sc.exe binPath= quoting
+  ; issues when $INSTDIR contains spaces (e.g. "NodePulse Connect").
+  ; Equivalent to: sc create NodePulseConnectDaemon start=demand obj=LocalSystem
+  WriteRegStr     HKLM "SYSTEM\CurrentControlSet\Services\NodePulseConnectDaemon" \
+                  "DisplayName" "NodePulse Connect Daemon"
+  WriteRegDWORD   HKLM "SYSTEM\CurrentControlSet\Services\NodePulseConnectDaemon" \
+                  "Start" 3
+  WriteRegDWORD   HKLM "SYSTEM\CurrentControlSet\Services\NodePulseConnectDaemon" \
+                  "Type" 16
+  WriteRegDWORD   HKLM "SYSTEM\CurrentControlSet\Services\NodePulseConnectDaemon" \
+                  "ErrorControl" 1
+  WriteRegStr     HKLM "SYSTEM\CurrentControlSet\Services\NodePulseConnectDaemon" \
+                  "ObjectName" "LocalSystem"
+
+  ; ImagePath: binary must be quoted (it has spaces), args do not need quoting
+  ; because statedir path also has spaces — both are double-quoted.
+  WriteRegExpandStr HKLM "SYSTEM\CurrentControlSet\Services\NodePulseConnectDaemon" \
+    "ImagePath" \
+    "$\"$INSTDIR\tailscaled.exe$\" --socket \\.\pipe\NodePulseConnect-tailscaled --statedir $\"C:\ProgramData\NodePulse Connect\tailscale-state$\" --state $\"C:\ProgramData\NodePulse Connect\tailscale-state\tailscale.state$\""
+
+  ; NO_PROXY: skip WinHTTP proxy detection that stalls doLogin on corporate networks.
+  WriteRegMultiStr HKLM "SYSTEM\CurrentControlSet\Services\NodePulseConnectDaemon" \
+                   "Environment" "NO_PROXY=*$\0no_proxy=*$\0"
+
+  ; Grant Authenticated Users start/stop/query — no admin needed at runtime.
+  ; SDDL: SY=SYSTEM full, BA=Admins full, AU=AuthUsers start+stop+query
+  nsExec::Exec 'sc.exe sdset "NodePulseConnectDaemon" "D:(A;;CCLCSWRPWPDTLOCRRC;;;SY)(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;BA)(A;;CCLCSWRPLO;;;AU)"'
+  Pop $0
 !macroend
 
 !macro NSIS_HOOK_PREUNINSTALL
-  ; Stop and delete the service before uninstalling files.
   nsExec::Exec 'sc.exe stop "NodePulseConnectDaemon"'
   Pop $0
   Sleep 3000
@@ -84,7 +86,6 @@
 !macroend
 
 !macro NSIS_HOOK_POSTUNINSTALL
-  ; Clean up firewall rules.
   nsExec::Exec 'netsh advfirewall firewall delete rule name="NodePulse Connect - Tailscale"'
   Pop $0
 !macroend

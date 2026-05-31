@@ -258,20 +258,139 @@ fn log_snippet(log: &str) -> String {
 pub fn start_daemon(app: &tauri::AppHandle) {
     #[cfg(target_os = "windows")]
     {
-        // Check if service is already running.
-        let running = std::process::Command::new("sc")
+        let log_path = daemon_log_path(app);
+        let _ = std::fs::create_dir_all(log_path.parent().unwrap_or(&log_path));
+
+        let mut diag = String::new();
+        diag.push_str("=== NodePulse Connect — Windows Service Diagnostics ===\n\n");
+
+        // ── 1. tailscaled.exe location ──────────────────────────────────────
+        let exe_dir = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|d| d.to_path_buf()));
+        match &exe_dir {
+            Some(d) => diag.push_str(&format!("[1] App dir        : {}\n", d.display())),
+            None     => diag.push_str("[1] App dir        : UNKNOWN (current_exe() failed)\n"),
+        }
+
+        // ── 2. wintun.dll ────────────────────────────────────────────────────
+        let wintun_path = exe_dir.as_ref().map(|d| d.join("wintun.dll"));
+        let wintun_exists = wintun_path.as_ref().map(|p| p.exists()).unwrap_or(false);
+        diag.push_str(&format!("[2] wintun.dll     : {} — {}\n",
+            wintun_path.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| "?".into()),
+            if wintun_exists { "EXISTS ✓" } else { "MISSING ✗ (kernel mode will fail)" }
+        ));
+
+        // ── 3. tailscaled.exe ────────────────────────────────────────────────
+        let tsd_path = exe_dir.as_ref().map(|d| d.join("tailscaled.exe"));
+        let tsd_exists = tsd_path.as_ref().map(|p| p.exists()).unwrap_or(false);
+        diag.push_str(&format!("[3] tailscaled.exe : {} — {}\n",
+            tsd_path.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| "?".into()),
+            if tsd_exists { "EXISTS ✓" } else { "MISSING ✗" }
+        ));
+
+        // ── 4. Statedir ──────────────────────────────────────────────────────
+        let state_dir = data_dir(app);
+        diag.push_str(&format!("[4] Statedir       : {} — {}\n",
+            state_dir.display(),
+            if state_dir.exists() { "EXISTS ✓" } else { "not present (will be created)" }
+        ));
+
+        // ── 5. sc qc — service config (ImagePath, account, start type) ──────
+        let qc_out = std::process::Command::new("sc")
+            .args(["qc", "NodePulseConnectDaemon"])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+            .unwrap_or_else(|e| format!("(sc qc failed: {e})"));
+        let service_exists = !qc_out.contains("FAILED") && !qc_out.contains("1060");
+        diag.push_str(&format!("\n[5] Service config (sc qc):\n"));
+        diag.push_str(&format!("    Installed: {}\n",
+            if service_exists { "YES ✓" } else { "NO ✗ — NSIS hook may have failed" }
+        ));
+        for line in qc_out.lines() {
+            let l = line.trim();
+            if l.starts_with("BINARY_PATH_NAME") || l.starts_with("SERVICE_START_NAME")
+                || l.starts_with("START_TYPE") || l.starts_with("TYPE") {
+                diag.push_str(&format!("    {l}\n"));
+            }
+        }
+
+        // ── 6. sc query — current service state ──────────────────────────────
+        let query_out = std::process::Command::new("sc")
             .args(["query", "NodePulseConnectDaemon"])
             .output()
-            .map(|o| String::from_utf8_lossy(&o.stdout).contains("RUNNING"))
-            .unwrap_or(false);
-        if running { return; }
+            .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+            .unwrap_or_else(|e| format!("(sc query failed: {e})"));
+        let already_running = query_out.contains("RUNNING");
+        let state_line = query_out.lines()
+            .find(|l| l.contains("STATE"))
+            .map(|l| l.trim().to_string())
+            .unwrap_or_else(|| query_out.trim().lines().next().unwrap_or("").to_string());
+        diag.push_str(&format!("\n[6] Service state  : {state_line}\n"));
 
-        let _ = std::process::Command::new("sc")
+        if already_running {
+            diag.push_str("    → Already running, skipping sc start\n");
+            let _ = std::fs::write(&log_path, &diag);
+            return;
+        }
+
+        // ── 7. sc start ──────────────────────────────────────────────────────
+        let start = std::process::Command::new("sc")
             .args(["start", "NodePulseConnectDaemon"])
             .output();
+        let (start_code, start_stdout, start_stderr) = match &start {
+            Ok(o) => (
+                o.status.code().unwrap_or(-1),
+                String::from_utf8_lossy(&o.stdout).to_string(),
+                String::from_utf8_lossy(&o.stderr).to_string(),
+            ),
+            Err(e) => (-1, String::new(), format!("spawn error: {e}")),
+        };
+        diag.push_str(&format!("\n[7] sc start exit  : {start_code}\n"));
+        if !start_stdout.trim().is_empty() {
+            for line in start_stdout.trim().lines() {
+                diag.push_str(&format!("    {line}\n"));
+            }
+        }
+        if !start_stderr.trim().is_empty() {
+            diag.push_str(&format!("    stderr: {}\n", start_stderr.trim()));
+        }
+        if start_code == 0 || start_stdout.contains("START_PENDING") || start_stdout.contains("RUNNING") {
+            diag.push_str("    → Service start accepted ✓\n");
+        } else {
+            diag.push_str("    → Service start FAILED ✗\n");
+            if start_stdout.contains("1056") { diag.push_str("    (error 1056: already running)\n"); }
+            if start_stdout.contains("1058") { diag.push_str("    (error 1058: service disabled)\n"); }
+            if start_stdout.contains("1060") { diag.push_str("    (error 1060: service does not exist — NSIS hook failed)\n"); }
+            if start_stdout.contains("1053") { diag.push_str("    (error 1053: service did not respond in time — process crashed early)\n"); }
+        }
+
+        diag.push_str(&format!("\n[8] Waiting for pipe: {}  (max 18s)\n", socket_path(app)));
+        let _ = std::fs::write(&log_path, &diag);
 
         let socket = socket_path(app);
         wait_for_socket(&socket);
+
+        // ── 9. Post-wait state ───────────────────────────────────────────────
+        let pipe_ready = socket_is_ready(&socket);
+        let post_query = std::process::Command::new("sc")
+            .args(["query", "NodePulseConnectDaemon"])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+            .unwrap_or_default();
+        let post_state = post_query.lines()
+            .find(|l| l.contains("STATE"))
+            .map(|l| l.trim().to_string())
+            .unwrap_or_else(|| "unknown".to_string());
+        diag.push_str(&format!("[9] After wait: pipe_ready={pipe_ready}, service {post_state}\n"));
+        if !pipe_ready {
+            diag.push_str("    → Named pipe never appeared.\n");
+            diag.push_str("      Likely causes:\n");
+            diag.push_str("      a) Service crashed (wintun.dll missing or driver load failed)\n");
+            diag.push_str("      b) Service registered wrong name with SCM (Patch 7 not applied)\n");
+            diag.push_str("      c) Child /subproc created pipe at different path (Patch 8 not applied)\n");
+        }
+        let _ = std::fs::write(&log_path, &diag);
     }
 
     #[cfg(not(target_os = "windows"))]

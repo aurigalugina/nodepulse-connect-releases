@@ -167,7 +167,7 @@ tailscaled --tun=userspace-networking --socket=<AppData>/tailscale-state/tailsca
 ### Statedir Paths
 | Platform | Statedir |
 |---|---|
-| Windows | `C:\ProgramData\NodePulse Connect\tailscale-state\` (accessible by SYSTEM + Users) |
+| Windows | `C:\ProgramData\NodePulseConnect\ts\` (no spaces — required by sc.exe binPath quoting) |
 | macOS/Linux | `<AppData>/id.ussi.nodepulse-connect/tailscale-state/` |
 
 ### Windows Service Architecture (v0.3.51+)
@@ -178,6 +178,7 @@ tailscaled --tun=userspace-networking --socket=<AppData>/tailscale-state/tailsca
 - **Effect:** Windows routing table gets `100.64.0.0/10 → WinTun` — browser/SSH can reach mesh IPs directly without SOCKS5 proxy
 - **SDDL:** Authenticated Users granted start/stop/query — no admin needed at runtime
 - **Installation:** NSIS POSTINSTALL hook (runs as admin) installs service + sets permissions + sets NO_PROXY env via registry
+- **Install mode:** `perMachine` (forced) — UAC elevation required at install time so `sc.exe create` succeeds
 
 ### Daemon Lifecycle (Windows)
 1. User clicks Connect → `tailscale_up` → `DaemonHandle::kill()` → `sc stop` (stop old service)

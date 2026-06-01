@@ -91,12 +91,14 @@ fn bundled_bin(name: &str) -> PathBuf {
 pub fn data_dir(app: &tauri::AppHandle) -> PathBuf {
     // Windows: service runs as LocalSystem — statedir lives in ProgramData so
     // both the service (SYSTEM) and the user app can access it.
+    // Path has NO spaces: required by sc.exe binPath quoting in NSIS hooks.nsh.
+    // Must match exactly: --statedir C:\ProgramData\NodePulseConnect\ts in hooks.nsh.
     #[cfg(target_os = "windows")]
     {
         let _ = app;
         return PathBuf::from(
             std::env::var("PROGRAMDATA").unwrap_or_else(|_| r"C:\ProgramData".to_string())
-        ).join("NodePulse Connect").join("tailscale-state");
+        ).join("NodePulseConnect").join("ts");
     }
     #[cfg(not(target_os = "windows"))]
     app.path().app_data_dir().expect("app data dir").join("tailscale-state")

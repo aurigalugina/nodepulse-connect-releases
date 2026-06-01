@@ -25,7 +25,7 @@
     CopyFiles "$INSTDIR\resources\wintun.dll" "$INSTDIR\wintun.dll"
   wintun_already_in_place:
 
-  ; ── Statedir (NO SPACES — required for sc.exe binPath quoting) ──────────────
+  ; ── Statedir (NO SPACES — args after binary in ImagePath are unquoted) ─────────
   CreateDirectory "C:\ProgramData\NodePulseConnect"
   CreateDirectory "C:\ProgramData\NodePulseConnect\ts"
   nsExec::Exec 'icacls "C:\ProgramData\NodePulseConnect" /grant "BUILTIN\Users:(OI)(CI)F" /T /Q'
@@ -40,15 +40,15 @@
   Pop $0
   Sleep 1000
 
-  ; Get 8.3 short path of $INSTDIR to eliminate spaces (e.g. "NodePulse Connect" -> "NODEP~1").
-  ; Statedir has no spaces, so the full binPath has no spaces — no inner quoting needed.
-  GetShortPathName "$INSTDIR" $R0
-
-  ; Create service via sc.exe directly (no PowerShell, no quoting hell).
-  ; binPath outer "..." is the whole binary+args string. Since $R0 and statedir have
-  ; no spaces, the binary is unambiguous and no inner quotes are required.
-  nsExec::ExecToLog "sc.exe create NodePulseConnectDaemon binPath= $\"$R0\tailscaled.exe --socket \\.\pipe\NodePulseConnect-tailscaled --statedir C:\ProgramData\NodePulseConnect\ts --state C:\ProgramData\NodePulseConnect\ts\ts.state$\" start= demand obj= LocalSystem DisplayName= $\"NodePulse Connect Daemon$\""
+  ; Create service entry with placeholder binPath — avoids GetShortPathName
+  ; (not a built-in NSIS 3 instruction) and quoting hell in sc.exe.
+  nsExec::ExecToLog 'sc.exe create NodePulseConnectDaemon start= demand obj= LocalSystem DisplayName= "NodePulse Connect Daemon" binPath= "C:\PLACEHOLDER"'
   Pop $0
+
+  ; Overwrite ImagePath via registry — NSIS WriteRegExpandStr handles spaces
+  ; in $INSTDIR (e.g. "C:\Program Files\NodePulse Connect") with proper quoting.
+  ; Resulting ImagePath: "C:\Program Files\NodePulse Connect\tailscaled.exe" --args...
+  WriteRegExpandStr HKLM "SYSTEM\CurrentControlSet\Services\NodePulseConnectDaemon" "ImagePath" `"$INSTDIR\tailscaled.exe" --socket \\.\pipe\NodePulseConnect-tailscaled --statedir C:\ProgramData\NodePulseConnect\ts --state C:\ProgramData\NodePulseConnect\ts\ts.state`
 
   ; Grant Authenticated Users start/stop/query (no admin needed at runtime).
   nsExec::Exec 'sc.exe sdset "NodePulseConnectDaemon" "D:(A;;CCLCSWRPWPDTLOCRRC;;;SY)(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;BA)(A;;CCLCSWRPLO;;;AU)"'

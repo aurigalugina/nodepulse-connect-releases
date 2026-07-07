@@ -141,8 +141,8 @@ Tailscale berjalan terpisah dari system Tailscale. Socket dan statedir fully iso
 ```
 # Windows (kernel mode, via Windows Service):
 tailscaled --socket \\.\pipe\NodePulseConnect-tailscaled
-           --statedir "C:\ProgramData\NodePulse Connect\tailscale-state"
-           --state   "C:\ProgramData\NodePulse Connect\tailscale-state\tailscale.state"
+           --statedir C:\ProgramData\NodePulseConnect\ts
+           --state   C:\ProgramData\NodePulseConnect\ts\ts.state
 # (NO --tun=userspace-networking → WinTun kernel driver → OS routing table populated)
 
 # macOS / Linux (userspace, child process):
@@ -182,7 +182,7 @@ tailscaled --tun=userspace-networking --socket=<AppData>/tailscale-state/tailsca
 
 ### Daemon Lifecycle (Windows)
 1. User clicks Connect → `tailscale_up` → `DaemonHandle::kill()` → `sc stop` (stop old service)
-2. Wipe statedir (`C:\ProgramData\NodePulse Connect\tailscale-state\`)
+2. Wipe statedir (`C:\ProgramData\NodePulseConnect\ts\`)
 3. `start_daemon()` → `sc start NodePulseConnectDaemon`
 4. `wait_for_socket()` poll 60× @ 300ms (max 18s) sampai named pipe ready
 5. `daemon_can_respond()` verify IPC live
@@ -221,6 +221,8 @@ tar = "0.4"
 - **Windows joining mesh slow**: Dengan kernel mode (WinTun), biasanya 5-15 detik. Service start + WinTun adapter init + WireGuard handshake. Max wait: service 18s + IPC 15 probes + polling 75s.
 
 ## Version History (recent)
+- **v0.3.59** — Fix Windows Service not installed: `installMode: perMachine` (force UAC at install), registry `WriteRegExpandStr` untuk set `ImagePath` (gantiin `GetShortPathName` yang bukan built-in NSIS 3), fix statedir mismatch (`data_dir()` Rust sekarang `C:\ProgramData\NodePulseConnect\ts` sesuai NSIS)
+- **v0.3.58** — (buggy) Windows kernel mode installer — `GetShortPathName` bukan built-in NSIS 3, per-user install tidak bisa buat service, statedir Rust tidak match NSIS
 - **v0.3.51** — Windows kernel mode via Windows Service: tailscaled installed as `NodePulseConnectDaemon` (LocalSystem, WinTun), statedir moved to ProgramData, OS routing table populated so browser/SSH can reach 100.64.x.x mesh IPs directly
 - **v0.3.50** — Fork Patch 6 (`resolveBestProfileLocked`): always return current profile on Windows — fix `doLogin` interrupted when CLI disconnects; empty profile switch was resetting WantRunning=false before doLogin could complete
 - **v0.3.44** — Patch tailscaled source in CI (build.yml Patch 3): force `serverMode=true` in `LocalBackend.Start()` — definitive fix for `b.Start(serverMode=false)` reset
